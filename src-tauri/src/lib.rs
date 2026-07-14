@@ -24,6 +24,7 @@ static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 
 const MAX_PSD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PSD_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
+const PREVIEW_REFRESH_INTERVAL: usize = 8;
 
 const ASSET_EXTENSIONS: &[&str] = &[
     "3ds", "aac", "ai", "aif", "aiff", "ase", "aseprite", "avif", "avi", "blend",
@@ -684,7 +685,8 @@ fn enrich_pending_images(
             .prepare(
                 "SELECT path, modified_ms FROM indexed_assets
                  WHERE availability = 'available' AND metadata_status = 'pending'
-                   AND (kind IN ('图片', '动图') OR extension = 'psd')",
+                   AND (kind IN ('图片', '动图') OR extension = 'psd')
+                 ORDER BY modified_ms DESC, path ASC",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -735,7 +737,7 @@ fn enrich_pending_images(
                 );
             }
         }
-        if index % 20 == 19 {
+        if index % PREVIEW_REFRESH_INTERVAL == PREVIEW_REFRESH_INTERVAL - 1 {
             if let Some(channel) = on_event.as_ref() {
                 let _ = channel.send(ScanEvent::new("assetsCommitted", &scan_id, &counters, started));
             }
@@ -1040,7 +1042,10 @@ fn cancel_scan(scan_id: String, manager: State<'_, ScanManager>) -> Result<(), S
 }
 
 #[tauri::command]
-async fn enrich_pending_previews(app: AppHandle) -> Result<(), String> {
+async fn enrich_pending_previews(
+    app: AppHandle,
+    on_event: Channel<ScanEvent>,
+) -> Result<(), String> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let database_path = app_data_dir.join("mavo-index.sqlite3");
@@ -1052,7 +1057,7 @@ async fn enrich_pending_previews(app: AppHandle) -> Result<(), String> {
             "startup-preview-backfill".to_string(),
             Arc::new(ScanCounters::default()),
             Instant::now(),
-            None,
+            Some(on_event),
         )
     })
     .await

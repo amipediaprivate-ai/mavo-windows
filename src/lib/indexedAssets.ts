@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Asset, AssetKind, Filters } from "../types";
 
 export interface IndexedAssetRecord {
@@ -31,6 +31,10 @@ export interface LoadIndexedAssetsOptions {
   query?: string;
   filters?: Filters;
   sort?: string;
+}
+
+interface PreviewEnrichmentEvent {
+  eventType: "assetsCommitted";
 }
 
 function formatBytes(bytes: number) {
@@ -98,6 +102,9 @@ export async function loadIndexedAssets(options: LoadIndexedAssetsOptions = {}) 
   return { ...page, items: page.items.map(toAsset) };
 }
 
-export async function enrichPendingPreviews() {
-  await invoke("enrich_pending_previews");
+export async function enrichPendingPreviews(onAssetsCommitted: () => void) {
+  const onEvent = new Channel<PreviewEnrichmentEvent>((event) => {
+    if (event.eventType === "assetsCommitted") onAssetsCommitted();
+  });
+  await invoke("enrich_pending_previews", { onEvent });
 }

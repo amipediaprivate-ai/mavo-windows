@@ -92,7 +92,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshIndexedAssets(false);
-    void enrichPendingPreviews()
+    void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1))
       .then(() => refreshIndexedAssets(true))
       .catch(() => undefined);
     // The first load deliberately uses the initial query state only.
