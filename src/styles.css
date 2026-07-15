@@ -1252,38 +1252,13 @@ select:focus-visible,
   white-space: nowrap;
 }
 
-.favorite-button {
-  position: absolute;
-  right: 8px;
-  bottom: 9px;
-  width: 25px;
-  height: 25px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  color: #9ba4b3;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-}
-
-.favorite-button:hover {
-  color: #f59e0b;
-  background: #fff8e9;
-}
-
-.favorite-button.active,
-.favorite-active {
-  color: #f3a00d !important;
-}
-
 .list-row {
   display: block;
 }
 
 .asset-card.list-card {
   display: grid;
-  grid-template-columns: 76px minmax(160px, 1.45fr) 58px minmax(126px, 1fr) 88px minmax(110px, 0.85fr) 105px 38px;
+  grid-template-columns: 76px minmax(160px, 1.45fr) 58px minmax(126px, 1fr) 88px minmax(110px, 0.85fr) 105px;
   align-items: center;
   border-radius: 9px;
 }
@@ -1331,11 +1306,6 @@ select:focus-visible,
   display: flex;
   align-items: center;
   gap: 5px;
-}
-
-.list-card .favorite-button {
-  position: static;
-  justify-self: center;
 }
 
 .empty-state {

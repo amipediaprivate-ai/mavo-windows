@@ -44,7 +44,6 @@ const emptyFilters: Filters = {
   format: [],
   folder: [],
   tags: [],
-  favorite: false,
 };
 
 type ListFilterKey = "source" | "kind" | "format" | "folder" | "tags";
@@ -211,7 +210,6 @@ export default function App() {
       if (indexedMode) {
         if (filters.source.length && !filters.source.includes(asset.source)) return false;
         if (filters.tags.length && !filters.tags.some((tag) => asset.tags.includes(tag))) return false;
-        if (filters.favorite && !asset.favorite) return false;
         return true;
       }
       if (normalizedQuery) {
@@ -223,7 +221,6 @@ export default function App() {
       if (filters.format.length && !filters.format.includes(asset.format)) return false;
       if (filters.folder.length && !filters.folder.includes(asset.folder)) return false;
       if (filters.tags.length && !filters.tags.some((tag) => asset.tags.includes(tag))) return false;
-      if (filters.favorite && !asset.favorite) return false;
       if (activeModule === "最近使用" && asset.id > "asset-010") return false;
       if (activeModule === "重复文件") return false;
       if (activeModule === "缺失文件") return false;
@@ -245,24 +242,21 @@ export default function App() {
 
   const selectedAsset = libraryAssets.find((asset) => asset.id === selectedId);
   const appliedFilterCount =
-    filters.source.length + filters.kind.length + filters.format.length + filters.folder.length + filters.tags.length + Number(filters.favorite)
+    filters.source.length + filters.kind.length + filters.format.length + filters.folder.length + filters.tags.length
     + Number(filters.minWidth !== undefined) + Number(filters.maxWidth !== undefined) + Number(filters.orientation !== undefined);
 
   const filterChips = useMemo(() => {
-    const chips: { key: ListFilterKey | "favorite" | "query"; value: string; label: string }[] = [];
+    const chips: { key: ListFilterKey | "query"; value: string; label: string }[] = [];
     (["source", "kind", "format", "folder", "tags"] as ListFilterKey[]).forEach((key) => {
       filters[key].forEach((value) => chips.push({ key, value, label: value }));
     });
-    if (filters.favorite) chips.push({ key: "favorite", value: "true", label: "已收藏" });
     if (query.trim()) chips.push({ key: "query", value: query, label: `搜索：${query}` });
     return chips;
   }, [filters, query]);
 
-  const clearChip = (key: ListFilterKey | "favorite" | "query", value: string) => {
+  const clearChip = (key: ListFilterKey | "query", value: string) => {
     if (key === "query") {
       setQuery("");
-    } else if (key === "favorite") {
-      setFilters((current) => ({ ...current, favorite: false }));
     } else {
       setFilters((current) => ({ ...current, [key]: current[key].filter((item) => item !== value) }));
     }
@@ -471,9 +465,6 @@ export default function App() {
             view={view}
             cardWidth={cardWidth}
             onSelect={(asset) => setSelectedId(asset.id)}
-            onToggleFavorite={(id) => {
-              setLibraryAssets((current) => current.map((asset) => asset.id === id ? { ...asset, favorite: !asset.favorite } : asset));
-            }}
             onOpen={(asset) => void handleViewOriginal(asset)}
             hasMore={indexedMode && nextOffset !== undefined}
             loading={loadingAssets}

@@ -3,7 +3,6 @@ import {
   CircleDot,
   ExternalLink,
   FolderOpen,
-  Heart,
   MoreHorizontal,
   PanelRightClose,
   Sparkles,
@@ -58,9 +57,6 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
               <h2>{asset.name}</h2>
               <p>{asset.format} · {asset.dimensions} · {asset.weight}</p>
             </div>
-            <button className={`icon-button small ${asset.favorite ? "favorite-active" : ""}`} aria-label="收藏">
-              <Heart size={16} fill={asset.favorite ? "currentColor" : "none"} />
-            </button>
           </div>
 
           <div className="detail-actions">

@@ -14,7 +14,6 @@ export interface Asset {
   folder: string;
   tags: string[];
   source: AssetSource;
-  favorite: boolean;
   importedAt: string;
   modifiedAt: string;
   palette: [string, string, string];
@@ -36,7 +35,6 @@ export interface Filters {
   format: string[];
   folder: string[];
   tags: string[];
-  favorite: boolean;
   minWidth?: number;
   maxWidth?: number;
   orientation?: "square" | "landscape" | "portrait" | "wide";

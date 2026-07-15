@@ -37,7 +37,7 @@ interface AppHeaderProps {
   backgroundTasks: BackgroundTask[];
 }
 
-const globalNav = ["资产", "收藏", "项目"];
+const globalNav = ["资产", "项目"];
 const moduleNav = ["全部资源", "智能视图", "重复文件", "缺失文件"];
 
 export function AppHeader({

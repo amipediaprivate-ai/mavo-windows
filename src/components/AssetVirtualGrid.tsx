@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Clock3, FolderOpen, Play, Star } from "lucide-react";
+import { Clock3, FolderOpen, Play } from "lucide-react";
 import type { Asset, AssetView } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
 import { AssetThumbnail } from "./AssetThumbnail";
@@ -11,7 +11,6 @@ interface AssetVirtualGridProps {
   view: AssetView;
   cardWidth: number;
   onSelect: (asset: Asset) => void;
-  onToggleFavorite: (id: string) => void;
   onOpen: (asset: Asset) => void;
   hasMore?: boolean;
   loading?: boolean;
@@ -32,14 +31,12 @@ function AssetCard({
   selected,
   view,
   onSelect,
-  onToggleFavorite,
   onOpen,
 }: {
   asset: Asset;
   selected: boolean;
   view: AssetView;
   onSelect: () => void;
-  onToggleFavorite: () => void;
   onOpen: () => void;
 }) {
   const showsCardMetadata = view !== "list";
@@ -85,17 +82,6 @@ function AssetCard({
           </>
         )}
       </div>
-      <button
-        className={`favorite-button ${asset.favorite ? "active" : ""}`}
-        aria-label={asset.favorite ? "取消收藏" : "收藏"}
-        title={asset.favorite ? "取消收藏" : "收藏"}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleFavorite();
-        }}
-      >
-        <Star size={15} fill={asset.favorite ? "currentColor" : "none"} />
-      </button>
     </article>
   );
 }
@@ -106,7 +92,6 @@ export function AssetVirtualGrid({
   view,
   cardWidth,
   onSelect,
-  onToggleFavorite,
   onOpen,
   hasMore = false,
   loading = false,
@@ -184,7 +169,6 @@ export function AssetVirtualGrid({
                   selected={selectedId === asset.id}
                   view={view}
                   onSelect={() => onSelect(asset)}
-                  onToggleFavorite={() => onToggleFavorite(asset.id)}
                   onOpen={() => onOpen(asset)}
                 />
               </div>
@@ -209,7 +193,6 @@ export function AssetVirtualGrid({
                     selected={selectedId === asset.id}
                     view={view}
                     onSelect={() => onSelect(asset)}
-                    onToggleFavorite={() => onToggleFavorite(asset.id)}
                     onOpen={() => onOpen(asset)}
                   />
                 ))}

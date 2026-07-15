@@ -133,7 +133,6 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     folder: record.folder,
     tags: [],
     source: "本地导入",
-    favorite: false,
     importedAt: formatDate(record.indexedAtMs),
     modifiedAt: formatDate(record.modifiedMs),
     palette: ["#26324a", "#42658a", "#182033"],
