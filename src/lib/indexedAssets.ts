@@ -48,6 +48,8 @@ export interface AssetQuerySpec {
   minWidth?: number;
   maxWidth?: number;
   orientation?: Filters["orientation"];
+  minDurationMs?: number;
+  maxDurationMs?: number;
 }
 
 export interface FacetOption {
@@ -162,6 +164,8 @@ export function buildAssetQuery(options: LoadIndexedAssetsOptions = {}): AssetQu
     minWidth: options.filters?.minWidth,
     maxWidth: options.filters?.maxWidth,
     orientation: options.filters?.orientation,
+    minDurationMs: options.filters?.minDurationMs,
+    maxDurationMs: options.filters?.maxDurationMs,
   };
 }
 

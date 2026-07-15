@@ -197,6 +197,8 @@ struct AssetQuery {
     min_width: Option<u32>,
     max_width: Option<u32>,
     orientation: Option<String>,
+    min_duration_ms: Option<u64>,
+    max_duration_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -663,6 +665,14 @@ fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
         Some("portrait") => where_parts.push("height > width".to_string()),
         Some("wide") => where_parts.push("width >= height * 2".to_string()),
         _ => {}
+    }
+    if let Some(min_duration_ms) = query.min_duration_ms {
+        where_parts.push("duration_ms >= ?".to_string());
+        values.push(Value::Integer(min_duration_ms as i64));
+    }
+    if let Some(max_duration_ms) = query.max_duration_ms {
+        where_parts.push("duration_ms <= ?".to_string());
+        values.push(Value::Integer(max_duration_ms as i64));
     }
     if query.duplicate_only.unwrap_or(false) {
         where_parts.push(

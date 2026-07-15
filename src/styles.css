@@ -785,6 +785,66 @@ select:focus-visible,
   font-size: 11px;
 }
 
+.filter-context {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 8px;
+  padding: 9px 10px;
+  color: #526079;
+  border: 1px solid #e2e8f5;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f7f9ff, #fbfcff);
+}
+
+.filter-context-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--primary);
+  border-radius: 9px;
+  background: #e9efff;
+}
+
+.filter-context > span:last-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.filter-context strong {
+  color: #344057;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.filter-context small {
+  overflow: hidden;
+  color: #8c96a7;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-context.mode-动图 .filter-context-icon {
+  color: #b16a18;
+  background: #fff3df;
+}
+
+.filter-context.mode-音频 .filter-context-icon {
+  color: #7652d6;
+  background: #f0ebff;
+}
+
+.filter-context.mode-视频 .filter-context-icon {
+  color: #d25166;
+  background: #ffedf1;
+}
+
 .filter-group {
   padding: 13px 2px;
   border-top: 1px solid #edf0f4;
@@ -926,6 +986,37 @@ select:focus-visible,
   color: var(--primary);
   border-color: #bfcdfb;
   background: var(--primary-soft);
+}
+
+.duration-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.duration-grid button {
+  min-width: 0;
+  height: 31px;
+  padding: 0 5px;
+  color: #697487;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.duration-grid button:hover {
+  color: var(--primary);
+  border-color: #c8d3f9;
+  background: #f8f9ff;
+}
+
+.duration-grid button.active {
+  color: var(--primary);
+  border-color: #bfcdfb;
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px rgba(63, 100, 232, 0.04);
 }
 
 .filter-empty {

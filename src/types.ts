@@ -38,4 +38,6 @@ export interface Filters {
   minWidth?: number;
   maxWidth?: number;
   orientation?: "square" | "landscape" | "portrait" | "wide";
+  minDurationMs?: number;
+  maxDurationMs?: number;
 }

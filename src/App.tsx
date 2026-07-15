@@ -176,7 +176,7 @@ export default function App() {
     const timer = window.setTimeout(() => void refreshIndexedAssets(true), 180);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, indexedMode, query, sort]);
+  }, [activeModule, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort]);
 
   useEffect(() => {
     if (!indexedMode) return;
@@ -186,7 +186,7 @@ export default function App() {
     }, 220);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, indexRevision, indexedMode, query]);
+  }, [activeModule, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
 
   useEffect(() => {
     if (indexRevision === 0) return;
@@ -271,7 +271,8 @@ export default function App() {
   }, [facets, indexedMode]);
   const appliedFilterCount =
     filters.source.length + filters.kind.length + filters.format.length + filters.folder.length + filters.tags.length
-    + Number(filters.minWidth !== undefined) + Number(filters.maxWidth !== undefined) + Number(filters.orientation !== undefined);
+    + Number(filters.minWidth !== undefined) + Number(filters.maxWidth !== undefined) + Number(filters.orientation !== undefined)
+    + Number(filters.minDurationMs !== undefined || filters.maxDurationMs !== undefined);
 
   const filterChips = useMemo(() => {
     const chips: { key: ListFilterKey | "query"; value: string; label: string }[] = [];
@@ -300,7 +301,16 @@ export default function App() {
   const handleModuleChange = async (module: string) => {
     setActiveModule(module);
     if (module === "全部" || categoryKinds[module]) {
-      setFilters((current) => current.kind.length ? { ...current, kind: [] } : current);
+      setFilters((current) => ({
+        ...current,
+        kind: [],
+        format: [],
+        minWidth: undefined,
+        maxWidth: undefined,
+        orientation: undefined,
+        minDurationMs: undefined,
+        maxDurationMs: undefined,
+      }));
     }
     if (module !== "智能视图") setActiveSmartViewId(undefined);
     if (module === "重复文件") {
@@ -344,6 +354,8 @@ export default function App() {
       minWidth: smartView.query.minWidth,
       maxWidth: smartView.query.maxWidth,
       orientation: smartView.query.orientation,
+      minDurationMs: smartView.query.minDurationMs,
+      maxDurationMs: smartView.query.maxDurationMs,
     });
   };
 
@@ -431,7 +443,7 @@ export default function App() {
       />
 
       <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>
-        {filtersOpen && <FilterSidebar filters={filters} facets={facets} onChange={handleFiltersChange} onReset={() => setFilters(emptyFilters)} />}
+        {filtersOpen && <FilterSidebar activeModule={activeModule} filters={filters} facets={facets} onChange={handleFiltersChange} onReset={() => setFilters(emptyFilters)} />}
 
         <main className="main-panel">
           <div className="asset-toolbar">
