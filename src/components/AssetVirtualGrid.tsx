@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Clock3, FolderOpen, Play } from "lucide-react";
 import type { Asset, AssetView } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
+import { AudioCardPlayer } from "./AudioPlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
 
 interface AssetVirtualGridProps {
@@ -51,10 +52,10 @@ function AssetCard({
       }}
     >
       <div
-        className="thumbnail-wrap"
+        className={`thumbnail-wrap ${asset.kind === "音频" ? "audio-thumbnail-wrap" : ""}`}
         style={view === "masonry" ? { aspectRatio: assetAspectRatio(asset) } : undefined}
       >
-        <AssetThumbnail asset={asset} />
+        {asset.kind === "音频" ? <AudioCardPlayer asset={asset} /> : <AssetThumbnail asset={asset} />}
         {showsCardMetadata && (
           <>
             <span className="format-pill">{asset.format}</span>

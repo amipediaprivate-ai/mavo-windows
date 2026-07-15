@@ -5,6 +5,7 @@ const MIN_ASPECT_RATIO = 0.28;
 const MAX_ASPECT_RATIO = 5;
 
 export function assetAspectRatio(asset: Asset) {
+  if (asset.kind === "音频") return DEFAULT_ASPECT_RATIO;
   let width = asset.width;
   let height = asset.height;
 

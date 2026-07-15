@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Asset } from "../types";
 
 function indexedAssetId(asset: Asset) {
@@ -9,6 +9,16 @@ function indexedAssetId(asset: Asset) {
 
 export function canLoadOriginal(asset: Asset) {
   return indexedAssetId(asset) !== undefined && (asset.kind === "图片" || asset.kind === "动图" || asset.format === "PSD");
+}
+
+export function canPlayAudio(asset: Asset) {
+  return asset.kind === "音频" && asset.availability !== "missing" && indexedAssetId(asset) !== undefined;
+}
+
+export function audioPlaybackUrl(asset: Asset) {
+  const assetId = indexedAssetId(asset);
+  if (assetId === undefined || asset.kind !== "音频") throw new Error("该资源没有可播放的本地音频");
+  return convertFileSrc(`indexed-${assetId}`, "mavo-media");
 }
 
 export async function loadOriginalAsset(asset: Asset) {

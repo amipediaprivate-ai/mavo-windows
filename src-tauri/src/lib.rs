@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
     hash::{Hash, Hasher},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -23,6 +23,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
+    http::{
+        header::{
+            ACCEPT_RANGES, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_LENGTH,
+            CONTENT_RANGE, CONTENT_TYPE, RANGE,
+        },
+        Request as HttpRequest, Response as HttpResponse, StatusCode,
+    },
     ipc::{Channel, Response},
     AppHandle, Emitter, Manager, State,
 };
@@ -913,6 +920,175 @@ fn indexed_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String>
         return Err("原始文件不存在或无法访问".to_string());
     }
     Ok(path)
+}
+
+fn indexed_audio_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let path: String = connection
+        .query_row(
+            "SELECT path FROM indexed_assets
+             WHERE rowid = ?1 AND kind = '音频' AND availability = 'available'",
+            params![asset_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "音频资源不存在或已不可用".to_string())?;
+    let path = PathBuf::from(path);
+    if !path.is_file() {
+        return Err("原始音频文件不存在或无法访问".to_string());
+    }
+    Ok(path)
+}
+
+fn parse_audio_byte_range(value: &str, file_size: u64) -> Result<Option<(u64, u64)>, ()> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    if file_size == 0 {
+        return Err(());
+    }
+    let raw = value.trim().strip_prefix("bytes=").ok_or(())?;
+    if raw.contains(',') {
+        return Err(());
+    }
+    let (start, end) = raw.split_once('-').ok_or(())?;
+    if start.is_empty() {
+        let suffix_length = end.parse::<u64>().map_err(|_| ())?;
+        if suffix_length == 0 {
+            return Err(());
+        }
+        let range_start = file_size.saturating_sub(suffix_length);
+        return Ok(Some((range_start, file_size - 1)));
+    }
+
+    let range_start = start.parse::<u64>().map_err(|_| ())?;
+    if range_start >= file_size {
+        return Err(());
+    }
+    let range_end = if end.is_empty() {
+        file_size - 1
+    } else {
+        end.parse::<u64>().map_err(|_| ())?.min(file_size - 1)
+    };
+    if range_end < range_start {
+        return Err(());
+    }
+    Ok(Some((range_start, range_end)))
+}
+
+fn audio_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "aac" => "audio/aac",
+        "aif" | "aiff" => "audio/aiff",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "wma" => "audio/x-ms-wma",
+        _ => "application/octet-stream",
+    }
+}
+
+fn audio_error_response(
+    status: StatusCode,
+    message: &str,
+    file_size: Option<u64>,
+) -> HttpResponse<Vec<u8>> {
+    let body = message.as_bytes().to_vec();
+    let mut builder = HttpResponse::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(CONTENT_LENGTH, body.len().to_string())
+        .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(CACHE_CONTROL, "no-store");
+    if let Some(size) = file_size {
+        builder = builder.header(CONTENT_RANGE, format!("bytes */{size}"));
+    }
+    builder.body(body).expect("valid audio error response")
+}
+
+fn audio_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> HttpResponse<Vec<u8>> {
+    let asset_id = request
+        .uri()
+        .path()
+        .trim_start_matches('/')
+        .strip_prefix("indexed-")
+        .and_then(|value| value.parse::<i64>().ok());
+    let Some(asset_id) = asset_id else {
+        return audio_error_response(StatusCode::BAD_REQUEST, "无效的音频资源 ID", None);
+    };
+    let path = match indexed_audio_asset_path(asset_id, app) {
+        Ok(path) => path,
+        Err(error) => return audio_error_response(StatusCode::NOT_FOUND, &error, None),
+    };
+    let file_size = match path.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => return audio_error_response(StatusCode::NOT_FOUND, &error.to_string(), None),
+    };
+    let requested_range = match request.headers().get(RANGE) {
+        Some(value) => match value
+            .to_str()
+            .map_err(|_| ())
+            .and_then(|value| parse_audio_byte_range(value, file_size))
+        {
+            Ok(range) => range,
+            Err(()) => {
+                return audio_error_response(
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    "请求的音频范围无效",
+                    Some(file_size),
+                )
+            }
+        },
+        None => None,
+    };
+    if file_size == 0 {
+        return audio_error_response(StatusCode::NO_CONTENT, "音频文件为空", None);
+    }
+    let (start, end, status) = match requested_range {
+        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+        None => (0, file_size - 1, StatusCode::OK),
+    };
+    let content_length = end - start + 1;
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) => return audio_error_response(StatusCode::NOT_FOUND, &error.to_string(), None),
+    };
+    if let Err(error) = file.seek(SeekFrom::Start(start)) {
+        return audio_error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string(), None);
+    }
+    let mut body = Vec::with_capacity(content_length.min(8 * 1024 * 1024) as usize);
+    if request.method() != tauri::http::Method::HEAD {
+        if let Err(error) = file.take(content_length).read_to_end(&mut body) {
+            return audio_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &error.to_string(),
+                None,
+            );
+        }
+    }
+
+    let mut builder = HttpResponse::builder()
+        .status(status)
+        .header(CONTENT_TYPE, audio_content_type(&path))
+        .header(CONTENT_LENGTH, content_length.to_string())
+        .header(ACCEPT_RANGES, "bytes")
+        .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(CACHE_CONTROL, "no-store");
+    if status == StatusCode::PARTIAL_CONTENT {
+        builder = builder.header(CONTENT_RANGE, format!("bytes {start}-{end}/{file_size}"));
+    }
+    builder.body(body).expect("valid audio stream response")
 }
 
 #[tauri::command]
@@ -2252,6 +2428,10 @@ fn list_background_tasks(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .register_asynchronous_uri_scheme_protocol("mavo-media", |context, request, responder| {
+            let app = context.app_handle().clone();
+            thread::spawn(move || responder.respond(audio_stream_response(&app, &request)));
+        })
         .manage(ScanManager::default())
         .manage(BackgroundTaskManager::default())
         .manage(WatchManager::default())
@@ -2324,6 +2504,31 @@ pub fn run() {
 mod tests {
     use super::*;
     use tauri::ipc::InvokeResponseBody;
+
+    #[test]
+    fn audio_range_parser_supports_seek_requests() {
+        assert_eq!(
+            parse_audio_byte_range("bytes=100-199", 1_000),
+            Ok(Some((100, 199)))
+        );
+        assert_eq!(
+            parse_audio_byte_range("bytes=900-", 1_000),
+            Ok(Some((900, 999)))
+        );
+        assert_eq!(
+            parse_audio_byte_range("bytes=-100", 1_000),
+            Ok(Some((900, 999)))
+        );
+        assert_eq!(parse_audio_byte_range("", 1_000), Ok(None));
+    }
+
+    #[test]
+    fn audio_range_parser_rejects_invalid_requests() {
+        assert!(parse_audio_byte_range("bytes=1000-", 1_000).is_err());
+        assert!(parse_audio_byte_range("bytes=300-200", 1_000).is_err());
+        assert!(parse_audio_byte_range("bytes=0-10,20-30", 1_000).is_err());
+        assert!(parse_audio_byte_range("items=0-10", 1_000).is_err());
+    }
 
     fn test_workspace(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("mavo-{name}-{}", create_scan_id()))

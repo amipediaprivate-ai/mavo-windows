@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { Asset } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
+import { AudioDetailPlayer } from "./AudioPlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
 
 interface DetailPanelProps {
@@ -44,14 +45,18 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
         <div className="empty-detail">请选择一个资源查看明细</div>
       ) : (
         <div className="detail-scroll">
-          <div className="detail-preview" style={{ aspectRatio: assetAspectRatio(asset) }}>
-            <AssetThumbnail asset={asset} large />
-            {asset.availability !== "missing" && (
-              <button className="preview-expand" onClick={() => onViewOriginal(asset)} aria-label="查看原图" title="查看原图">
-                <ExternalLink size={14} />
-              </button>
-            )}
-          </div>
+          {asset.kind === "音频" ? (
+            <AudioDetailPlayer asset={asset} />
+          ) : (
+            <div className="detail-preview" style={{ aspectRatio: assetAspectRatio(asset) }}>
+              <AssetThumbnail asset={asset} large />
+              {asset.availability !== "missing" && (
+                <button className="preview-expand" onClick={() => onViewOriginal(asset)} aria-label="查看原图" title="查看原图">
+                  <ExternalLink size={14} />
+                </button>
+              )}
+            </div>
+          )}
           <div className="detail-title-row">
             <div>
               <h2>{asset.name}</h2>
@@ -62,6 +67,8 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           <div className="detail-actions">
             {asset.availability === "missing" ? (
               <button className="primary-button" onClick={() => onRelink(asset)}>重新定位文件</button>
+            ) : asset.kind === "音频" ? (
+              <button className="primary-button" onClick={() => onOpenFolder(asset)}>打开所在文件夹</button>
             ) : (
               <button className="primary-button" onClick={() => onViewOriginal(asset)}>查看原图</button>
             )}

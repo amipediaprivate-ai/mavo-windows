@@ -413,6 +413,11 @@ export default function App() {
   };
 
   const handleViewOriginal = async (asset: (typeof libraryAssets)[number]) => {
+    if (asset.kind === "音频") {
+      setSelectedId(asset.id);
+      setDetailOpen(true);
+      return;
+    }
     try {
       await openOriginalAsset(asset);
     } catch (error) {
