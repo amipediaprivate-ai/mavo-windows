@@ -121,16 +121,24 @@ function motifFor(kind: AssetKind): Asset["motif"] {
   return "icon";
 }
 
+export function formatIndexedAssetDimensions(record: IndexedAssetRecord) {
+  const { width, height, durationMs } = record;
+  if (width !== undefined && height !== undefined) {
+    return `${width} × ${height}${durationMs !== undefined ? ` · ${formatDuration(durationMs)}` : ""}`;
+  }
+  if (durationMs !== undefined) return formatDuration(durationMs);
+  if (record.metadataStatus === "unsupported") return "无法分析";
+  if (record.metadataStatus === "ready") return "无可用媒体信息";
+  return "尺寸待分析";
+}
+
 export function toAsset(record: IndexedAssetRecord): Asset {
-  const dimensions = record.width && record.height
-    ? `${record.width} × ${record.height}${record.durationMs ? ` · ${formatDuration(record.durationMs)}` : ""}`
-    : record.durationMs ? formatDuration(record.durationMs) : "尺寸待分析";
   return {
     id: `indexed-${record.id}`,
     name: record.name,
     format: record.format,
     kind: record.kind,
-    dimensions,
+    dimensions: formatIndexedAssetDimensions(record),
     weight: formatBytes(record.sizeBytes),
     folder: record.folder,
     tags: [],
