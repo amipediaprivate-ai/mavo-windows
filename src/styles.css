@@ -317,6 +317,13 @@ select:focus-visible,
   gap: 4px;
 }
 
+.asset-category-nav {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
 .module-nav button {
   height: 32px;
   display: inline-flex;
@@ -339,6 +346,77 @@ select:focus-visible,
 .module-nav button.active {
   color: var(--primary);
   background: var(--primary-soft);
+}
+
+.asset-category-nav button {
+  padding: 0 10px;
+}
+
+.asset-category-nav button svg {
+  color: #8a94a5;
+  transition: color 0.16s ease;
+}
+
+.asset-category-nav button:hover svg,
+.asset-category-nav button.active svg {
+  color: currentColor;
+}
+
+.asset-category-nav button small {
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 5px;
+  color: #8b95a5;
+  border-radius: 9px;
+  background: #f0f2f6;
+  font-size: 9px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.asset-category-nav button.active small {
+  color: #fff;
+  background: var(--primary);
+}
+
+.management-view-select {
+  position: relative;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 5px;
+  padding: 0 7px 0 9px;
+  color: #6b7587;
+  border-left: 1px solid #e7eaf0;
+}
+
+.management-view-select.active {
+  color: var(--primary);
+}
+
+.management-view-select select {
+  max-width: 74px;
+  height: 30px;
+  appearance: none;
+  padding: 0;
+  color: inherit;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.management-view-select:hover {
+  color: #273244;
+}
+
+.management-view-select.active:hover {
+  color: var(--primary-hover);
 }
 
 .background-tasks {
@@ -2322,6 +2400,14 @@ select:focus-visible,
 
   .module-nav button {
     padding: 0 8px;
+  }
+
+  .asset-category-nav button small {
+    display: none;
+  }
+
+  .management-view-select {
+    padding-right: 4px;
   }
 
   .module-actions .secondary-button {

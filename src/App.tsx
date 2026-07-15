@@ -36,7 +36,7 @@ import {
   type SmartView,
 } from "./lib/indexedAssets";
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
-import type { AssetView, Filters, ScanScope } from "./types";
+import type { AssetKind, AssetView, Filters, ScanScope } from "./types";
 
 const emptyFilters: Filters = {
   source: [],
@@ -48,11 +48,18 @@ const emptyFilters: Filters = {
 
 type ListFilterKey = "source" | "kind" | "format" | "folder" | "tags";
 
+const categoryKinds: Partial<Record<string, AssetKind>> = {
+  图片: "图片",
+  动图: "动图",
+  音频: "音频",
+  视频: "视频",
+};
+
 export default function App() {
   const [libraryAssets, setLibraryAssets] = useState(initialAssets);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const [activeModule, setActiveModule] = useState("全部资源");
+  const [activeModule, setActiveModule] = useState("全部");
   const [view, setView] = useState<AssetView>("grid");
   const [sort, setSort] = useState("newest");
   const [cardWidth, setCardWidth] = useState(178);
@@ -93,9 +100,13 @@ export default function App() {
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
+  const activeCategoryKind = categoryKinds[activeModule];
+  const effectiveFilters = activeCategoryKind
+    ? { ...filters, kind: [activeCategoryKind] }
+    : filters;
   const indexedQueryOptions = {
     query,
-    filters,
+    filters: effectiveFilters,
     sort: activeModule === "重复文件" ? "duplicates" : sort,
     availability: activeModule === "缺失文件" ? "missing" as const : "available" as const,
     duplicateOnly: activeModule === "重复文件",
@@ -221,6 +232,7 @@ export default function App() {
       if (filters.format.length && !filters.format.includes(asset.format)) return false;
       if (filters.folder.length && !filters.folder.includes(asset.folder)) return false;
       if (filters.tags.length && !filters.tags.some((tag) => asset.tags.includes(tag))) return false;
+      if (activeCategoryKind && asset.kind !== activeCategoryKind) return false;
       if (activeModule === "最近使用" && asset.id > "asset-010") return false;
       if (activeModule === "重复文件") return false;
       if (activeModule === "缺失文件") return false;
@@ -232,7 +244,7 @@ export default function App() {
       if (sort === "size") return Number.parseFloat(b.weight) - Number.parseFloat(a.weight);
       return b.importedAt.localeCompare(a.importedAt);
     });
-  }, [activeModule, filters, indexedMode, libraryAssets, query, sort]);
+  }, [activeCategoryKind, activeModule, filters, indexedMode, libraryAssets, query, sort]);
 
   useEffect(() => {
     if (filteredAssets.length > 0 && !filteredAssets.some((asset) => asset.id === selectedId)) {
@@ -241,6 +253,22 @@ export default function App() {
   }, [filteredAssets, selectedId]);
 
   const selectedAsset = libraryAssets.find((asset) => asset.id === selectedId);
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = { 全部: 0, 图片: 0, 动图: 0, 音频: 0, 视频: 0 };
+    if (facets) {
+      facets.kinds.forEach(({ value, count }) => {
+        counts.全部 += count;
+        if (value in counts) counts[value] = count;
+      });
+      return counts;
+    }
+    if (indexedMode) return {};
+    initialAssets.forEach((asset) => {
+      counts.全部 += 1;
+      if (asset.kind in counts) counts[asset.kind] += 1;
+    });
+    return counts;
+  }, [facets, indexedMode]);
   const appliedFilterCount =
     filters.source.length + filters.kind.length + filters.format.length + filters.folder.length + filters.tags.length
     + Number(filters.minWidth !== undefined) + Number(filters.maxWidth !== undefined) + Number(filters.orientation !== undefined);
@@ -262,8 +290,18 @@ export default function App() {
     }
   };
 
+  const handleFiltersChange = (nextFilters: Filters) => {
+    if (activeCategoryKind && nextFilters.kind !== filters.kind) {
+      setActiveModule("全部");
+    }
+    setFilters(nextFilters);
+  };
+
   const handleModuleChange = async (module: string) => {
     setActiveModule(module);
+    if (module === "全部" || categoryKinds[module]) {
+      setFilters((current) => current.kind.length ? { ...current, kind: [] } : current);
+    }
     if (module !== "智能视图") setActiveSmartViewId(undefined);
     if (module === "重复文件") {
       showToast("正在检测完全重复的文件…");
@@ -314,7 +352,7 @@ export default function App() {
     try {
       await deleteSmartView(viewId);
       setActiveSmartViewId(undefined);
-      setActiveModule("全部资源");
+      setActiveModule("全部");
       await refreshSmartViews();
       showToast("智能视图已删除");
     } catch (error) {
@@ -381,6 +419,7 @@ export default function App() {
         onQueryChange={setQuery}
         activeModule={activeModule}
         onModuleChange={handleModuleChange}
+        categoryCounts={categoryCounts}
         onAction={showToast}
         onOpenScan={setScanScope}
         onRefresh={() => void handleRefresh()}
@@ -392,7 +431,7 @@ export default function App() {
       />
 
       <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>
-        {filtersOpen && <FilterSidebar filters={filters} facets={facets} onChange={setFilters} onReset={() => setFilters(emptyFilters)} />}
+        {filtersOpen && <FilterSidebar filters={filters} facets={facets} onChange={handleFiltersChange} onReset={() => setFilters(emptyFilters)} />}
 
         <main className="main-panel">
           <div className="asset-toolbar">

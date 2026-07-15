@@ -8,15 +8,20 @@ import {
   FolderSearch,
   HardDrive,
   Image,
+  ImagePlay,
+  Images,
   Import,
+  LayoutGrid,
   LibraryBig,
   LoaderCircle,
+  Music2,
   Plus,
   RefreshCw,
   Search,
   Settings2,
   Sparkles,
   Trash2,
+  Video,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BackgroundTask, SmartView } from "../lib/indexedAssets";
@@ -27,6 +32,7 @@ interface AppHeaderProps {
   onQueryChange: (value: string) => void;
   activeModule: string;
   onModuleChange: (module: string) => void;
+  categoryCounts: Partial<Record<string, number>>;
   onAction: (message: string) => void;
   onOpenScan: (scope: ScanScope) => void;
   onRefresh: () => void;
@@ -38,13 +44,22 @@ interface AppHeaderProps {
 }
 
 const globalNav = ["资产", "项目"];
-const moduleNav = ["全部资源", "智能视图", "重复文件", "缺失文件"];
+const categoryNav = [
+  { label: "全部", icon: LayoutGrid },
+  { label: "图片", icon: Images },
+  { label: "动图", icon: ImagePlay },
+  { label: "音频", icon: Music2 },
+  { label: "视频", icon: Video },
+];
+
+const managementViews = ["智能视图", "重复文件", "缺失文件"];
 
 export function AppHeader({
   query,
   onQueryChange,
   activeModule,
   onModuleChange,
+  categoryCounts,
   onAction,
   onOpenScan,
   onRefresh,
@@ -147,16 +162,34 @@ export function AppHeader({
 
       <div className="module-bar">
         <nav className="module-nav" aria-label="资产模块导航">
-          {moduleNav.map((item) => (
-            <button
-              key={item}
-              className={activeModule === item ? "active" : ""}
-              onClick={() => onModuleChange(item)}
+          <div className="asset-category-nav" aria-label="按媒体类型浏览">
+            {categoryNav.map(({ label, icon: Icon }) => (
+              <button
+                key={label}
+                className={activeModule === label ? "active" : ""}
+                onClick={() => onModuleChange(label)}
+                aria-current={activeModule === label ? "page" : undefined}
+              >
+                <Icon size={14} strokeWidth={1.8} />
+                <span>{label}</span>
+                {categoryCounts[label] !== undefined && (
+                  <small>{categoryCounts[label]?.toLocaleString("zh-CN")}</small>
+                )}
+              </button>
+            ))}
+          </div>
+          <label className={`management-view-select ${managementViews.includes(activeModule) ? "active" : ""}`}>
+            <Sparkles size={13} />
+            <select
+              value={managementViews.includes(activeModule) ? activeModule : ""}
+              onChange={(event) => event.target.value && onModuleChange(event.target.value)}
+              aria-label="选择管理视图"
             >
-              {item === "智能视图" && <Sparkles size={14} />}
-              {item}
-            </button>
-          ))}
+              <option value="">管理视图</option>
+              {managementViews.map((item) => <option value={item} key={item}>{item}</option>)}
+            </select>
+            <ChevronDown size={12} />
+          </label>
           <div className="background-tasks" ref={tasksRef}>
             <button
               className={`background-task-trigger ${tasksOpen ? "open" : ""} ${runningTasks.length ? "running" : ""}`}
