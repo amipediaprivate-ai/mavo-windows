@@ -30,6 +30,19 @@ use tauri::{
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 static MEDIA_TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // Mavo is a GUI application: console child processes must stay invisible.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 const MAX_PSD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PSD_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
 const PREVIEW_REFRESH_INTERVAL: usize = 8;
@@ -918,20 +931,20 @@ fn open_asset_original(asset_id: i64, app: AppHandle) -> Result<(), String> {
     let path = indexed_asset_path(asset_id, &app)?;
 
     #[cfg(target_os = "windows")]
-    Command::new("rundll32.exe")
+    windowless_command("rundll32.exe")
         .arg("url.dll,FileProtocolHandler")
         .arg(&path)
         .spawn()
         .map_err(|error| format!("无法调用系统查看器：{error}"))?;
 
     #[cfg(target_os = "macos")]
-    Command::new("open")
+    windowless_command("open")
         .arg(&path)
         .spawn()
         .map_err(|error| format!("无法调用系统查看器：{error}"))?;
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    Command::new("xdg-open")
+    windowless_command("xdg-open")
         .arg(&path)
         .spawn()
         .map_err(|error| format!("无法调用系统查看器：{error}"))?;
@@ -947,19 +960,19 @@ fn open_asset_folder(asset_id: i64, app: AppHandle) -> Result<(), String> {
         .ok_or_else(|| "无法确定所属文件夹".to_string())?;
 
     #[cfg(target_os = "windows")]
-    Command::new("explorer.exe")
+    windowless_command("explorer.exe")
         .arg(folder)
         .spawn()
         .map_err(|error| format!("无法打开所属文件夹：{error}"))?;
 
     #[cfg(target_os = "macos")]
-    Command::new("open")
+    windowless_command("open")
         .arg(folder)
         .spawn()
         .map_err(|error| format!("无法打开所属文件夹：{error}"))?;
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    Command::new("xdg-open")
+    windowless_command("xdg-open")
         .arg(folder)
         .spawn()
         .map_err(|error| format!("无法打开所属文件夹：{error}"))?;
@@ -1362,10 +1375,10 @@ fn media_command(name: &str) -> Command {
         };
         let bundled = directory.join(file_name);
         if bundled.is_file() {
-            return Command::new(bundled);
+            return windowless_command(bundled);
         }
     }
-    Command::new(name)
+    windowless_command(name)
 }
 
 fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
