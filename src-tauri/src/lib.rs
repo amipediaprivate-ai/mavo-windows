@@ -53,6 +53,7 @@ fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 const MAX_PSD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PSD_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
 const PREVIEW_REFRESH_INTERVAL: usize = 8;
+const MAX_MEDIA_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
 const ASSET_EXTENSIONS: &[&str] = &[
     "3ds", "aac", "ai", "aif", "aiff", "ase", "aseprite", "avif", "avi", "blend", "bmp", "cdr",
@@ -453,15 +454,43 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
         }
     }
-    if kind_was_missing {
-        let mut statement = connection
-            .prepare("UPDATE indexed_assets SET kind = ?1 WHERE extension = ?2")
+    let kinds_normalized: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'asset_kinds_normalized_v2')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if kind_was_missing || !kinds_normalized {
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
             .map_err(|error| error.to_string())?;
-        for extension in ASSET_EXTENSIONS {
-            statement
-                .execute(params![asset_kind(extension), extension])
+        let normalization = (|| -> Result<(), String> {
+            let mut statement = connection
+                .prepare("UPDATE indexed_assets SET kind = ?1 WHERE extension = ?2 AND kind != ?1")
                 .map_err(|error| error.to_string())?;
+            for extension in ASSET_EXTENSIONS {
+                statement
+                    .execute(params![asset_kind(extension), extension])
+                    .map_err(|error| error.to_string())?;
+            }
+            drop(statement);
+            connection
+                .execute(
+                    "INSERT INTO app_metadata (key, value) VALUES ('asset_kinds_normalized_v2', '1')
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = normalization {
+            let _ = connection.execute_batch("ROLLBACK");
+            return Err(error);
         }
+        connection
+            .execute_batch("COMMIT")
+            .map_err(|error| error.to_string())?;
     }
     connection
         .execute_batch(
@@ -943,7 +972,7 @@ fn indexed_media_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, S
     Ok(path)
 }
 
-fn parse_audio_byte_range(value: &str, file_size: u64) -> Result<Option<(u64, u64)>, ()> {
+fn parse_media_byte_range(value: &str, file_size: u64) -> Result<Option<(u64, u64)>, ()> {
     if value.trim().is_empty() {
         return Ok(None);
     }
@@ -1007,7 +1036,7 @@ fn media_content_type(path: &Path) -> &'static str {
     }
 }
 
-fn audio_error_response(
+fn media_error_response(
     status: StatusCode,
     message: &str,
     file_size: Option<u64>,
@@ -1022,7 +1051,25 @@ fn audio_error_response(
     if let Some(size) = file_size {
         builder = builder.header(CONTENT_RANGE, format!("bytes */{size}"));
     }
-    builder.body(body).expect("valid audio error response")
+    builder.body(body).expect("valid media error response")
+}
+
+fn bounded_media_response_range(
+    requested_range: Option<(u64, u64)>,
+    file_size: u64,
+) -> (u64, u64, StatusCode) {
+    let (start, requested_end) = requested_range.unwrap_or((0, file_size - 1));
+    let end = requested_end.min(
+        start
+            .saturating_add(MAX_MEDIA_RESPONSE_BYTES - 1)
+            .min(file_size - 1),
+    );
+    let status = if start > 0 || end < file_size - 1 {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    (start, end, status)
 }
 
 fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> HttpResponse<Vec<u8>> {
@@ -1033,25 +1080,25 @@ fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
         .strip_prefix("indexed-")
         .and_then(|value| value.parse::<i64>().ok());
     let Some(asset_id) = asset_id else {
-        return audio_error_response(StatusCode::BAD_REQUEST, "无效的媒体资源 ID", None);
+        return media_error_response(StatusCode::BAD_REQUEST, "无效的媒体资源 ID", None);
     };
     let path = match indexed_media_asset_path(asset_id, app) {
         Ok(path) => path,
-        Err(error) => return audio_error_response(StatusCode::NOT_FOUND, &error, None),
+        Err(error) => return media_error_response(StatusCode::NOT_FOUND, &error, None),
     };
     let file_size = match path.metadata() {
         Ok(metadata) => metadata.len(),
-        Err(error) => return audio_error_response(StatusCode::NOT_FOUND, &error.to_string(), None),
+        Err(error) => return media_error_response(StatusCode::NOT_FOUND, &error.to_string(), None),
     };
     let requested_range = match request.headers().get(RANGE) {
         Some(value) => match value
             .to_str()
             .map_err(|_| ())
-            .and_then(|value| parse_audio_byte_range(value, file_size))
+            .and_then(|value| parse_media_byte_range(value, file_size))
         {
             Ok(range) => range,
             Err(()) => {
-                return audio_error_response(
+                return media_error_response(
                     StatusCode::RANGE_NOT_SATISFIABLE,
                     "请求的媒体范围无效",
                     Some(file_size),
@@ -1061,24 +1108,21 @@ fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
         None => None,
     };
     if file_size == 0 {
-        return audio_error_response(StatusCode::NO_CONTENT, "媒体文件为空", None);
+        return media_error_response(StatusCode::NO_CONTENT, "媒体文件为空", None);
     }
-    let (start, end, status) = match requested_range {
-        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
-        None => (0, file_size - 1, StatusCode::OK),
-    };
+    let (start, end, status) = bounded_media_response_range(requested_range, file_size);
     let content_length = end - start + 1;
     let mut file = match File::open(&path) {
         Ok(file) => file,
-        Err(error) => return audio_error_response(StatusCode::NOT_FOUND, &error.to_string(), None),
+        Err(error) => return media_error_response(StatusCode::NOT_FOUND, &error.to_string(), None),
     };
     if let Err(error) = file.seek(SeekFrom::Start(start)) {
-        return audio_error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string(), None);
+        return media_error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string(), None);
     }
     let mut body = Vec::with_capacity(content_length.min(8 * 1024 * 1024) as usize);
     if request.method() != tauri::http::Method::HEAD {
         if let Err(error) = file.take(content_length).read_to_end(&mut body) {
-            return audio_error_response(
+            return media_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &error.to_string(),
                 None,
@@ -2514,28 +2558,80 @@ mod tests {
     use tauri::ipc::InvokeResponseBody;
 
     #[test]
-    fn audio_range_parser_supports_seek_requests() {
+    fn media_range_parser_supports_seek_requests() {
         assert_eq!(
-            parse_audio_byte_range("bytes=100-199", 1_000),
+            parse_media_byte_range("bytes=100-199", 1_000),
             Ok(Some((100, 199)))
         );
         assert_eq!(
-            parse_audio_byte_range("bytes=900-", 1_000),
+            parse_media_byte_range("bytes=900-", 1_000),
             Ok(Some((900, 999)))
         );
         assert_eq!(
-            parse_audio_byte_range("bytes=-100", 1_000),
+            parse_media_byte_range("bytes=-100", 1_000),
             Ok(Some((900, 999)))
         );
-        assert_eq!(parse_audio_byte_range("", 1_000), Ok(None));
+        assert_eq!(parse_media_byte_range("", 1_000), Ok(None));
     }
 
     #[test]
-    fn audio_range_parser_rejects_invalid_requests() {
-        assert!(parse_audio_byte_range("bytes=1000-", 1_000).is_err());
-        assert!(parse_audio_byte_range("bytes=300-200", 1_000).is_err());
-        assert!(parse_audio_byte_range("bytes=0-10,20-30", 1_000).is_err());
-        assert!(parse_audio_byte_range("items=0-10", 1_000).is_err());
+    fn media_range_parser_rejects_invalid_requests() {
+        assert!(parse_media_byte_range("bytes=1000-", 1_000).is_err());
+        assert!(parse_media_byte_range("bytes=300-200", 1_000).is_err());
+        assert!(parse_media_byte_range("bytes=0-10,20-30", 1_000).is_err());
+        assert!(parse_media_byte_range("items=0-10", 1_000).is_err());
+    }
+
+    #[test]
+    fn media_responses_are_bounded_for_large_files() {
+        let file_size = MAX_MEDIA_RESPONSE_BYTES * 4;
+        assert_eq!(
+            bounded_media_response_range(Some((0, file_size - 1)), file_size),
+            (0, MAX_MEDIA_RESPONSE_BYTES - 1, StatusCode::PARTIAL_CONTENT)
+        );
+        assert_eq!(
+            bounded_media_response_range(None, file_size),
+            (0, MAX_MEDIA_RESPONSE_BYTES - 1, StatusCode::PARTIAL_CONTENT)
+        );
+        assert_eq!(
+            bounded_media_response_range(None, 1_000),
+            (0, 999, StatusCode::OK)
+        );
+    }
+
+    #[test]
+    fn asset_kind_migration_repairs_legacy_labels() {
+        let workspace = test_workspace("kind-migration");
+        fs::create_dir_all(&workspace).unwrap();
+        let database = workspace.join("index.sqlite3");
+        let connection = setup_database(&database).unwrap();
+        connection
+            .execute(
+                "INSERT INTO indexed_assets
+                 (path, name, extension, size_bytes, modified_ms, scan_root, last_scan_id, indexed_at_ms, kind)
+                 VALUES ('C:/legacy.mp4', 'legacy.mp4', 'mp4', 10, 1, 'C:/', 'scan', 1, 'ÊÓÆµ')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM app_metadata WHERE key = 'asset_kinds_normalized_v2'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let connection = setup_database(&database).unwrap();
+        let kind: String = connection
+            .query_row(
+                "SELECT kind FROM indexed_assets WHERE name = 'legacy.mp4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "视频");
+        drop(connection);
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     fn test_workspace(name: &str) -> PathBuf {
