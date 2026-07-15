@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { Asset } from "../types";
 import { audioPlaybackUrl, canPlayAudio } from "../lib/desktopAssets";
+import { announceMediaPlayback, MEDIA_PLAYBACK_STARTED_EVENT, playbackOwner } from "../lib/mediaPlayback";
 
 export type AudioPlaybackMode = "once" | "loop";
 export type AudioPlaybackStatus = "idle" | "loading" | "playing" | "paused" | "error";
@@ -97,6 +98,14 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
   }, [stopTicker]);
 
   useEffect(() => () => stopTicker(), [stopTicker]);
+
+  useEffect(() => {
+    const pauseForOtherMedia = (event: Event) => {
+      if (playbackOwner(event) !== "global-audio") audioRef.current?.pause();
+    };
+    window.addEventListener(MEDIA_PLAYBACK_STARTED_EVENT, pauseForOtherMedia);
+    return () => window.removeEventListener(MEDIA_PLAYBACK_STARTED_EVENT, pauseForOtherMedia);
+  }, []);
 
   const playElement = useCallback((audio: HTMLAudioElement) => {
     setError("");
@@ -213,6 +222,7 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
           if (pending.autoplay) playElement(audio);
         }}
         onPlaying={() => {
+          announceMediaPlayback("global-audio");
           setStatus("playing");
           startTicker();
         }}

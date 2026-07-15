@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Clock3, FolderOpen, Play } from "lucide-react";
+import { Clock3, FolderOpen } from "lucide-react";
 import type { Asset, AssetView } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
 import { AudioCardPlayer } from "./AudioPlayer";
 import { AnimatedImagePlayer } from "./AnimatedImagePlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
+import { VideoCardPlayer } from "./VideoPlayer";
 
 interface AssetVirtualGridProps {
   assets: Asset[];
@@ -58,6 +59,8 @@ function AssetCard({
       >
         {asset.kind === "音频" ? (
           <AudioCardPlayer asset={asset} />
+        ) : asset.kind === "视频" ? (
+          <VideoCardPlayer asset={asset} />
         ) : asset.kind === "动图" ? (
           <AnimatedImagePlayer asset={asset} variant="card" />
         ) : (
@@ -67,9 +70,6 @@ function AssetCard({
           <>
             <span className="format-pill">{asset.format}</span>
             <span className="source-pill">{asset.source === "平台下载" ? "平台" : "本地"}</span>
-            {asset.kind === "视频" ? (
-              <span className="play-indicator"><Play size={13} fill="currentColor" /></span>
-            ) : null}
           </>
         )}
       </div>

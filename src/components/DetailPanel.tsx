@@ -13,6 +13,7 @@ import { assetAspectRatio } from "../lib/assetDimensions";
 import { AudioDetailPlayer } from "./AudioPlayer";
 import { AnimatedImagePlayer } from "./AnimatedImagePlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
+import { VideoDetailPlayer } from "./VideoPlayer";
 
 interface DetailPanelProps {
   asset?: Asset;
@@ -48,6 +49,8 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
         <div className="detail-scroll">
           {asset.kind === "音频" ? (
             <AudioDetailPlayer asset={asset} />
+          ) : asset.kind === "视频" ? (
+            <VideoDetailPlayer asset={asset} />
           ) : (
             <div className="detail-preview" style={{ aspectRatio: assetAspectRatio(asset) }}>
               {asset.kind === "动图" ? (
@@ -72,7 +75,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           <div className="detail-actions">
             {asset.availability === "missing" ? (
               <button className="primary-button" onClick={() => onRelink(asset)}>重新定位文件</button>
-            ) : asset.kind === "音频" ? (
+            ) : asset.kind === "音频" || asset.kind === "视频" ? (
               <button className="primary-button" onClick={() => onOpenFolder(asset)}>打开所在文件夹</button>
             ) : (
               <button className="primary-button" onClick={() => onViewOriginal(asset)}>查看原图</button>

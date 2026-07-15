@@ -922,7 +922,7 @@ fn indexed_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String>
     Ok(path)
 }
 
-fn indexed_audio_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String> {
+fn indexed_media_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -931,14 +931,14 @@ fn indexed_audio_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, S
     let path: String = connection
         .query_row(
             "SELECT path FROM indexed_assets
-             WHERE rowid = ?1 AND kind = '音频' AND availability = 'available'",
+             WHERE rowid = ?1 AND kind IN ('音频', '视频') AND availability = 'available'",
             params![asset_id],
             |row| row.get(0),
         )
-        .map_err(|_| "音频资源不存在或已不可用".to_string())?;
+        .map_err(|_| "媒体资源不存在或已不可用".to_string())?;
     let path = PathBuf::from(path);
     if !path.is_file() {
-        return Err("原始音频文件不存在或无法访问".to_string());
+        return Err("原始媒体文件不存在或无法访问".to_string());
     }
     Ok(path)
 }
@@ -979,7 +979,7 @@ fn parse_audio_byte_range(value: &str, file_size: u64) -> Result<Option<(u64, u6
     Ok(Some((range_start, range_end)))
 }
 
-fn audio_content_type(path: &Path) -> &'static str {
+fn media_content_type(path: &Path) -> &'static str {
     match path
         .extension()
         .and_then(|value| value.to_str())
@@ -995,6 +995,14 @@ fn audio_content_type(path: &Path) -> &'static str {
         "ogg" => "audio/ogg",
         "wav" => "audio/wav",
         "wma" => "audio/x-ms-wma",
+        "avi" => "video/x-msvideo",
+        "flv" => "video/x-flv",
+        "m4v" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "wmv" => "video/x-ms-wmv",
         _ => "application/octet-stream",
     }
 }
@@ -1017,7 +1025,7 @@ fn audio_error_response(
     builder.body(body).expect("valid audio error response")
 }
 
-fn audio_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> HttpResponse<Vec<u8>> {
+fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> HttpResponse<Vec<u8>> {
     let asset_id = request
         .uri()
         .path()
@@ -1025,9 +1033,9 @@ fn audio_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
         .strip_prefix("indexed-")
         .and_then(|value| value.parse::<i64>().ok());
     let Some(asset_id) = asset_id else {
-        return audio_error_response(StatusCode::BAD_REQUEST, "无效的音频资源 ID", None);
+        return audio_error_response(StatusCode::BAD_REQUEST, "无效的媒体资源 ID", None);
     };
-    let path = match indexed_audio_asset_path(asset_id, app) {
+    let path = match indexed_media_asset_path(asset_id, app) {
         Ok(path) => path,
         Err(error) => return audio_error_response(StatusCode::NOT_FOUND, &error, None),
     };
@@ -1045,7 +1053,7 @@ fn audio_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
             Err(()) => {
                 return audio_error_response(
                     StatusCode::RANGE_NOT_SATISFIABLE,
-                    "请求的音频范围无效",
+                    "请求的媒体范围无效",
                     Some(file_size),
                 )
             }
@@ -1053,7 +1061,7 @@ fn audio_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
         None => None,
     };
     if file_size == 0 {
-        return audio_error_response(StatusCode::NO_CONTENT, "音频文件为空", None);
+        return audio_error_response(StatusCode::NO_CONTENT, "媒体文件为空", None);
     }
     let (start, end, status) = match requested_range {
         Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
@@ -1080,7 +1088,7 @@ fn audio_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
 
     let mut builder = HttpResponse::builder()
         .status(status)
-        .header(CONTENT_TYPE, audio_content_type(&path))
+        .header(CONTENT_TYPE, media_content_type(&path))
         .header(CONTENT_LENGTH, content_length.to_string())
         .header(ACCEPT_RANGES, "bytes")
         .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
@@ -2430,7 +2438,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("mavo-media", |context, request, responder| {
             let app = context.app_handle().clone();
-            thread::spawn(move || responder.respond(audio_stream_response(&app, &request)));
+            thread::spawn(move || responder.respond(media_stream_response(&app, &request)));
         })
         .manage(ScanManager::default())
         .manage(BackgroundTaskManager::default())
