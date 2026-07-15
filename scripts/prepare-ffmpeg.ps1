@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
-$archiveName = "ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip"
-$preparationRevision = "2"
+$archiveName = "ffmpeg-n8.1-latest-win64-lgpl-8.1.zip"
+$preparationRevision = "3"
 $releaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $destination = Join-Path $projectRoot "src-tauri\resources\ffmpeg"
@@ -61,8 +61,6 @@ try {
     foreach ($runtimeName in @("ffmpeg.exe", "ffprobe.exe")) {
         Copy-Item -LiteralPath (Join-Path $sourceBin $runtimeName) -Destination $destination -Force
     }
-    Get-ChildItem -LiteralPath $sourceBin -Filter "*.dll" -File |
-        Copy-Item -Destination $destination -Force
 
     $archiveRoot = $sourceFfmpeg.Directory.Parent.FullName
     foreach ($noticeName in @("LICENSE.txt", "README.txt")) {
