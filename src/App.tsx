@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   BookmarkPlus,
   ChevronDown,
@@ -18,7 +20,19 @@ import { DetailPanel } from "./components/DetailPanel";
 import { FilterSidebar } from "./components/FilterSidebar";
 import { ScanDialog } from "./components/ScanDialog";
 import { assets as initialAssets } from "./data/assets";
-import { enrichPendingPreviews, loadIndexedAssets } from "./lib/indexedAssets";
+import {
+  deleteSmartView,
+  enrichPendingPreviews,
+  listSmartViews,
+  loadAssetFacets,
+  loadIndexedAssets,
+  relinkIndexedAsset,
+  removeIndexedAsset,
+  saveSmartView,
+  scanDuplicateAssets,
+  type AssetFacets,
+  type SmartView,
+} from "./lib/indexedAssets";
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
 import type { AssetView, Filters, ScanScope } from "./types";
 
@@ -52,6 +66,9 @@ export default function App() {
   const [loadingAssets, setLoadingAssets] = useState(false);
   const [indexRevision, setIndexRevision] = useState(0);
   const [previewAssetId, setPreviewAssetId] = useState<string>();
+  const [facets, setFacets] = useState<AssetFacets>();
+  const [smartViews, setSmartViews] = useState<SmartView[]>([]);
+  const [activeSmartViewId, setActiveSmartViewId] = useState<number>();
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
 
@@ -74,10 +91,18 @@ export default function App() {
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
+  const indexedQueryOptions = {
+    query,
+    filters,
+    sort: activeModule === "重复文件" ? "duplicates" : sort,
+    availability: activeModule === "缺失文件" ? "missing" as const : "available" as const,
+    duplicateOnly: activeModule === "重复文件",
+  };
+
   const refreshIndexedAssets = async (forceIndexedMode = false) => {
     const requestId = ++assetRequest.current;
     try {
-      const page = await loadIndexedAssets({ query, filters, sort, limit: 200 });
+      const page = await loadIndexedAssets({ ...indexedQueryOptions, limit: 200 });
       if (requestId !== assetRequest.current) return;
       if (page.total > 0 || forceIndexedMode || indexedMode) {
         setIndexedMode(true);
@@ -92,6 +117,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshIndexedAssets(false);
+    void listSmartViews().then(setSmartViews).catch(() => undefined);
     void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1))
       .then(() => refreshIndexedAssets(true))
       .catch(() => undefined);
@@ -100,11 +126,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen("asset-index-changed", () => setIndexRevision((revision) => revision + 1)).then((unlisten) => {
+      if (disposed) unlisten(); else stop = unlisten;
+    });
+    return () => { disposed = true; stop?.(); };
+  }, []);
+
+  useEffect(() => {
     if (!indexedMode) return;
     const timer = window.setTimeout(() => void refreshIndexedAssets(true), 180);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.kind, filters.format, filters.folder, indexedMode, query, sort]);
+  }, [activeModule, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, indexedMode, query, sort]);
+
+  useEffect(() => {
+    if (!indexedMode) return;
+    const timer = window.setTimeout(() => {
+      void loadAssetFacets({ ...indexedQueryOptions, duplicateOnly: false, availability: "available" })
+        .then(setFacets).catch(() => undefined);
+    }, 220);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, indexRevision, indexedMode, query]);
 
   useEffect(() => {
     if (indexRevision === 0) return;
@@ -119,7 +164,7 @@ export default function App() {
     setLoadingAssets(true);
     const offset = nextOffset;
     try {
-      const page = await loadIndexedAssets({ offset, query, filters, sort, limit: 200 });
+      const page = await loadIndexedAssets({ ...indexedQueryOptions, offset, limit: 200 });
       setLibraryAssets((current) => {
         const existing = new Set(current.map((asset) => asset.id));
         return [...current, ...page.items.filter((asset) => !existing.has(asset.id))];
@@ -154,7 +199,7 @@ export default function App() {
       if (filters.favorite && !asset.favorite) return false;
       if (activeModule === "最近使用" && asset.id > "asset-010") return false;
       if (activeModule === "重复文件") return false;
-      if (activeModule === "回收站") return false;
+      if (activeModule === "缺失文件") return false;
       return true;
     });
 
@@ -173,7 +218,8 @@ export default function App() {
 
   const selectedAsset = libraryAssets.find((asset) => asset.id === selectedId);
   const appliedFilterCount =
-    filters.source.length + filters.kind.length + filters.format.length + filters.folder.length + filters.tags.length + Number(filters.favorite);
+    filters.source.length + filters.kind.length + filters.format.length + filters.folder.length + filters.tags.length + Number(filters.favorite)
+    + Number(filters.minWidth !== undefined) + Number(filters.maxWidth !== undefined) + Number(filters.orientation !== undefined);
 
   const filterChips = useMemo(() => {
     const chips: { key: ListFilterKey | "favorite" | "query"; value: string; label: string }[] = [];
@@ -195,9 +241,96 @@ export default function App() {
     }
   };
 
-  const handleModuleChange = (module: string) => {
+  const handleModuleChange = async (module: string) => {
     setActiveModule(module);
-    if (module === "智能视图") showToast("智能视图将在索引服务接入后启用");
+    if (module !== "智能视图") setActiveSmartViewId(undefined);
+    if (module === "重复文件") {
+      showToast("正在检测完全重复的文件…");
+      try {
+        const result = await scanDuplicateAssets();
+        setIndexRevision((revision) => revision + 1);
+        showToast(`发现 ${result.duplicateGroups} 组、${result.duplicateFiles} 个重复文件`);
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "重复文件检测失败");
+      }
+    }
+  };
+
+  const refreshSmartViews = () => listSmartViews().then(setSmartViews).catch(() => undefined);
+
+  const handleSaveSmartView = async () => {
+    const name = window.prompt("为当前筛选命名", "新智能视图")?.trim();
+    if (!name) return;
+    try {
+      await saveSmartView(name, indexedQueryOptions);
+      await refreshSmartViews();
+      showToast(`已保存智能视图「${name}」`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "无法保存智能视图");
+    }
+  };
+
+  const handleSmartViewSelect = (viewId: number) => {
+    const smartView = smartViews.find((item) => item.id === viewId);
+    if (!smartView) return;
+    setActiveSmartViewId(viewId);
+    setActiveModule("智能视图");
+    setQuery(smartView.query.query ?? "");
+    setSort(smartView.query.sort ?? "newest");
+    setFilters({
+      ...emptyFilters,
+      kind: smartView.query.kinds ?? [],
+      format: smartView.query.extensions?.map((value) => value.toUpperCase()) ?? [],
+      folder: smartView.query.folders ?? [],
+      minWidth: smartView.query.minWidth,
+      maxWidth: smartView.query.maxWidth,
+      orientation: smartView.query.orientation,
+    });
+  };
+
+  const handleDeleteSmartView = async (viewId: number) => {
+    if (!window.confirm("确定删除当前智能视图？")) return;
+    try {
+      await deleteSmartView(viewId);
+      setActiveSmartViewId(undefined);
+      setActiveModule("全部资源");
+      await refreshSmartViews();
+      showToast("智能视图已删除");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "无法删除智能视图");
+    }
+  };
+
+  const handleRefresh = async () => {
+    if (activeModule === "重复文件") {
+      await handleModuleChange("重复文件");
+    } else {
+      setIndexRevision((revision) => revision + 1);
+      showToast("资源索引已刷新");
+    }
+  };
+
+  const handleRelink = async (asset: (typeof libraryAssets)[number]) => {
+    const selected = await open({ title: `重新定位 ${asset.name}`, multiple: false, directory: false });
+    if (typeof selected !== "string") return;
+    try {
+      await relinkIndexedAsset(asset, selected);
+      setIndexRevision((revision) => revision + 1);
+      showToast("文件已重新定位");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "无法重新定位文件");
+    }
+  };
+
+  const handleRemoveFromIndex = async (asset: (typeof libraryAssets)[number]) => {
+    if (!window.confirm(`从索引中清理「${asset.name}」？原文件不会被删除。`)) return;
+    try {
+      await removeIndexedAsset(asset);
+      setIndexRevision((revision) => revision + 1);
+      showToast("已从索引清理");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "无法清理索引");
+    }
   };
 
   const handleOpenFolder = async (asset: (typeof libraryAssets)[number]) => {
@@ -229,10 +362,15 @@ export default function App() {
         onModuleChange={handleModuleChange}
         onAction={showToast}
         onOpenScan={setScanScope}
+        onRefresh={() => void handleRefresh()}
+        smartViews={smartViews}
+        activeSmartViewId={activeSmartViewId}
+        onSmartViewSelect={handleSmartViewSelect}
+        onDeleteSmartView={(viewId) => void handleDeleteSmartView(viewId)}
       />
 
       <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>
-        {filtersOpen && <FilterSidebar filters={filters} onChange={setFilters} onReset={() => setFilters(emptyFilters)} />}
+        {filtersOpen && <FilterSidebar filters={filters} facets={facets} onChange={setFilters} onReset={() => setFilters(emptyFilters)} />}
 
         <main className="main-panel">
           <div className="asset-toolbar">
@@ -285,7 +423,7 @@ export default function App() {
             )}
           </div>
 
-          {filterChips.length > 0 && (
+          {(filterChips.length > 0 || appliedFilterCount > 0) && (
             <div className="active-filter-bar">
               <span className="active-filter-label">当前筛选</span>
               {filterChips.map((chip) => (
@@ -293,7 +431,7 @@ export default function App() {
                   {chip.label} <X size={12} />
                 </button>
               ))}
-              <button className="save-view-button" onClick={() => showToast("已保存为智能视图")}>
+              <button className="save-view-button" onClick={() => void handleSaveSmartView()}>
                 <BookmarkPlus size={14} /> 保存视图
               </button>
             </div>
@@ -308,7 +446,7 @@ export default function App() {
             onToggleFavorite={(id) => {
               setLibraryAssets((current) => current.map((asset) => asset.id === id ? { ...asset, favorite: !asset.favorite } : asset));
             }}
-            onOpen={(asset) => showToast(`正在打开 ${asset.name}`)}
+            onOpen={(asset) => void handleViewOriginal(asset)}
             hasMore={indexedMode && nextOffset !== undefined}
             loading={loadingAssets}
             onLoadMore={() => void loadMoreIndexedAssets()}
@@ -322,6 +460,8 @@ export default function App() {
             onAction={showToast}
             onViewOriginal={(asset) => void handleViewOriginal(asset)}
             onOpenFolder={(asset) => void handleOpenFolder(asset)}
+            onRelink={(asset) => void handleRelink(asset)}
+            onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}
           />
         )}
       </section>

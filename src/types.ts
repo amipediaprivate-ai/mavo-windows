@@ -37,4 +37,7 @@ export interface Filters {
   folder: string[];
   tags: string[];
   favorite: boolean;
+  minWidth?: number;
+  maxWidth?: number;
+  orientation?: "square" | "landscape" | "portrait" | "wide";
 }

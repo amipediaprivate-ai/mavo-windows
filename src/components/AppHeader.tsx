@@ -10,7 +10,9 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Trash2,
 } from "lucide-react";
+import type { SmartView } from "../lib/indexedAssets";
 import type { ScanScope } from "../types";
 
 interface AppHeaderProps {
@@ -20,10 +22,15 @@ interface AppHeaderProps {
   onModuleChange: (module: string) => void;
   onAction: (message: string) => void;
   onOpenScan: (scope: ScanScope) => void;
+  onRefresh: () => void;
+  smartViews: SmartView[];
+  activeSmartViewId?: number;
+  onSmartViewSelect: (viewId: number) => void;
+  onDeleteSmartView: (viewId: number) => void;
 }
 
 const globalNav = ["资产", "收藏", "项目"];
-const moduleNav = ["全部资源", "最近使用", "智能视图", "重复文件", "回收站"];
+const moduleNav = ["全部资源", "智能视图", "重复文件", "缺失文件"];
 
 export function AppHeader({
   query,
@@ -32,6 +39,11 @@ export function AppHeader({
   onModuleChange,
   onAction,
   onOpenScan,
+  onRefresh,
+  smartViews,
+  activeSmartViewId,
+  onSmartViewSelect,
+  onDeleteSmartView,
 }: AppHeaderProps) {
   return (
     <>
@@ -99,7 +111,18 @@ export function AppHeader({
           ))}
         </nav>
         <div className="module-actions">
-          <button className="secondary-button compact" onClick={() => onAction("资源索引已刷新")}>
+          {smartViews.length > 0 && (
+            <div className="smart-view-picker">
+              <select value={activeSmartViewId ?? ""} onChange={(event) => onSmartViewSelect(Number(event.target.value))} aria-label="选择智能视图">
+                <option value="">智能视图…</option>
+                {smartViews.map((view) => <option key={view.id} value={view.id}>{view.name}</option>)}
+              </select>
+              {activeSmartViewId !== undefined && (
+                <button className="icon-button small" onClick={() => onDeleteSmartView(activeSmartViewId)} aria-label="删除当前智能视图" title="删除当前智能视图"><Trash2 size={13} /></button>
+              )}
+            </div>
+          )}
+          <button className="secondary-button compact" onClick={onRefresh}>
             <RefreshCw size={14} /> 刷新
           </button>
           <button className="secondary-button compact" onClick={() => onOpenScan("folder")}>

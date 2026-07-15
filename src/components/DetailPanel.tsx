@@ -19,6 +19,8 @@ interface DetailPanelProps {
   onAction: (message: string) => void;
   onViewOriginal: (asset: Asset) => void;
   onOpenFolder: (asset: Asset) => void;
+  onRelink: (asset: Asset) => void;
+  onRemoveFromIndex: (asset: Asset) => void;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -30,7 +32,7 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRemoveFromIndex }: DetailPanelProps) {
   return (
     <aside className="detail-panel">
       <div className="detail-heading">
@@ -45,9 +47,11 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
         <div className="detail-scroll">
           <div className="detail-preview" style={{ aspectRatio: assetAspectRatio(asset) }}>
             <AssetThumbnail asset={asset} large />
-            <button className="preview-expand" onClick={() => onViewOriginal(asset)} aria-label="查看原图" title="查看原图">
-              <ExternalLink size={14} />
-            </button>
+            {asset.availability !== "missing" && (
+              <button className="preview-expand" onClick={() => onViewOriginal(asset)} aria-label="查看原图" title="查看原图">
+                <ExternalLink size={14} />
+              </button>
+            )}
           </div>
           <div className="detail-title-row">
             <div>
@@ -60,7 +64,11 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           </div>
 
           <div className="detail-actions">
-            <button className="primary-button" onClick={() => onViewOriginal(asset)}>查看原图</button>
+            {asset.availability === "missing" ? (
+              <button className="primary-button" onClick={() => onRelink(asset)}>重新定位文件</button>
+            ) : (
+              <button className="primary-button" onClick={() => onViewOriginal(asset)}>查看原图</button>
+            )}
             <button className="icon-button" onClick={() => onAction("更多操作菜单已打开")} aria-label="更多操作"><MoreHorizontal size={17} /></button>
           </div>
 
@@ -82,7 +90,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
 
           <section className="detail-section">
             <h3><FolderOpen size={14} /> 所属文件夹</h3>
-            <button className="folder-link" onClick={() => onOpenFolder(asset)} title={`打开 ${asset.folder}`}>
+            <button className="folder-link" onClick={() => asset.availability === "missing" ? onRelink(asset) : onOpenFolder(asset)} title={asset.availability === "missing" ? "重新定位文件" : `打开 ${asset.folder}`}>
               <span className="folder-icon"><FolderOpen size={15} /></span>
               <span><strong>{asset.folder}</strong><small>游戏美术资源库</small></span>
               <ChevronRight size={15} />
@@ -100,8 +108,17 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
 
           <section className="detail-section compact-section">
             <DetailRow label="来源" value={asset.source} />
+            <DetailRow label="状态" value={asset.availability === "missing" ? "文件缺失" : "可用"} />
             <DetailRow label="资源 ID" value={asset.id.toUpperCase()} />
           </section>
+          {asset.availability === "missing" && (
+            <section className="detail-section missing-actions">
+              <h3>缺失文件处理</h3>
+              <p>重新选择原文件可保留当前资产记录；清理只移除索引和缓存，不会删除磁盘文件。</p>
+              <button className="secondary-button" onClick={() => onRelink(asset)}>重新定位</button>
+              <button className="text-button danger" onClick={() => onRemoveFromIndex(asset)}>从索引清理</button>
+            </section>
+          )}
         </div>
       )}
     </aside>

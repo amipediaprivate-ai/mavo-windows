@@ -345,6 +345,23 @@ select:focus-visible,
   margin-left: auto;
 }
 
+.smart-view-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.smart-view-picker select {
+  width: 132px;
+  height: 32px;
+  padding: 0 8px;
+  color: #566174;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 11px;
+}
+
 .secondary-button,
 .primary-button,
 .library-switch {
@@ -570,6 +587,37 @@ select:focus-visible,
   color: var(--primary);
   border-color: #c8d3f9;
   background: var(--primary-soft);
+}
+
+.segment-grid button.active {
+  color: var(--primary);
+  border-color: #bfcdfb;
+  background: var(--primary-soft);
+}
+
+.filter-empty {
+  padding: 4px 0;
+  color: #a1a9b6;
+  font-size: 10px;
+}
+
+.facet-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.facet-summary span {
+  padding: 7px;
+  color: #7a8494;
+  border-radius: 7px;
+  background: #f5f7fa;
+  font-size: 10px;
+}
+
+.facet-summary strong {
+  float: right;
+  color: #4d586b;
 }
 
 .main-panel {
@@ -1314,6 +1362,17 @@ select:focus-visible,
 
 .compact-section {
   border-bottom: 0;
+}
+
+.missing-actions p {
+  margin: 0 0 8px;
+  color: #8a94a4;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.text-button.danger {
+  color: #c54e5d;
 }
 
 .toast {
