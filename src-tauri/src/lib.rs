@@ -5,13 +5,15 @@ use psd::Psd;
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use serde::{Deserialize, Serialize};
 use std::{
+    any::Any,
     collections::hash_map::DefaultHasher,
     collections::{HashMap, HashSet},
     fs::{self, File},
     hash::{Hash, Hasher},
     io::Read,
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, sync_channel, Receiver},
@@ -48,6 +50,7 @@ struct ScanManager {
 #[derive(Clone, Default)]
 struct BackgroundTaskManager {
     tasks: Arc<Mutex<HashMap<String, BackgroundTask>>>,
+    enrichment_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1365,12 +1368,95 @@ fn media_command(name: &str) -> Command {
     Command::new(name)
 }
 
+fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法读取媒体工具输出".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "无法读取媒体工具错误信息".to_string())?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut stdout = stdout;
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut stderr = stderr;
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + timeout;
+
+    let status = loop {
+        match child.try_wait().map_err(|error| error.to_string())? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!(
+                    "媒体处理超过 {} 秒，已跳过该文件",
+                    timeout.as_secs()
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "读取媒体工具输出时发生异常".to_string())?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "读取媒体工具错误信息时发生异常".to_string())?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_string())
+        })
+        .unwrap_or_else(|| "未知解码异常".to_string())
+}
+
+fn generate_image_preview(path: &Path, thumbnail_path: &Path) -> Result<(u32, u32), String> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let image = decode_preview(path)?;
+        let dimensions = image.dimensions();
+        image
+            .thumbnail(480, 320)
+            .save_with_format(thumbnail_path, ImageFormat::Png)
+            .map_err(|error| error.to_string())?;
+        Ok(dimensions)
+    }))
+    .unwrap_or_else(|payload| Err(format!("预览解码异常：{}", panic_message(payload))))
+}
+
 fn enrich_media_file(
     path: &Path,
     kind: &str,
     thumbnail_path: &Path,
 ) -> Result<(Option<i64>, Option<i64>, i64, Option<String>), String> {
-    let output = media_command("ffprobe")
+    let mut probe = media_command("ffprobe");
+    probe
         .args([
             "-v",
             "error",
@@ -1379,9 +1465,9 @@ fn enrich_media_file(
             "-of",
             "json",
         ])
-        .arg(path)
-        .output()
-        .map_err(|_| "内置 ffprobe 不可用，请重新安装 Mavo".to_string())?;
+        .arg(path);
+    let output = command_output_with_timeout(&mut probe, Duration::from_secs(30))
+        .map_err(|error| format!("ffprobe 处理失败：{error}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -1417,7 +1503,7 @@ fn enrich_media_file(
         .unwrap_or_default();
 
     let mut command = media_command("ffmpeg");
-    command.args(["-v", "error", "-y"]);
+    command.args(["-nostdin", "-v", "error", "-y"]);
     if kind == "视频" {
         command.args(["-ss", "1"]).arg("-i").arg(path).args([
             "-frames:v",
@@ -1433,7 +1519,8 @@ fn enrich_media_file(
             "1",
         ]);
     }
-    let thumbnail = command.arg(thumbnail_path).output();
+    command.arg(thumbnail_path);
+    let thumbnail = command_output_with_timeout(&mut command, Duration::from_secs(60));
     let generated = thumbnail
         .ok()
         .filter(|result| result.status.success())
@@ -1494,6 +1581,15 @@ fn enrich_pending_images(
     task_manager: Option<BackgroundTaskManager>,
 ) -> Result<(), String> {
     enter_background_mode();
+    // Preview enrichment may be requested by startup, a completed scan, and the
+    // file watcher at nearly the same time. Process one snapshot at a time so
+    // workers do not decode the same files or contend over SQLite writes.
+    let _enrichment_guard = task_manager.as_ref().map(|manager| {
+        manager
+            .enrichment_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
     fs::create_dir_all(&thumbnail_dir).map_err(|error| error.to_string())?;
     let connection = setup_database(&database_path)?;
     let paths = {
@@ -1536,11 +1632,34 @@ fn enrich_pending_images(
         }
     }
 
+    let mut completed = 0;
     for (index, (path, modified_ms, kind)) in paths.into_iter().enumerate() {
         thread::sleep(Duration::from_millis(4));
-        if kind == "视频" || kind == "音频" {
+        let current_item = Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        if index == 0 {
+            if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+                publish_enrichment_tasks(
+                    app,
+                    manager,
+                    &scan_id,
+                    0,
+                    total,
+                    current_item.clone(),
+                    "running",
+                    task_started_at_ms,
+                );
+            }
+        }
+
+        let item_result = if kind == "视频" || kind == "音频" {
             let thumbnail_path = media_thumbnail_path(&thumbnail_dir, &path, modified_ms);
-            match enrich_media_file(Path::new(&path), &kind, &thumbnail_path) {
+            let enrichment = catch_unwind(AssertUnwindSafe(|| {
+                enrich_media_file(Path::new(&path), &kind, &thumbnail_path)
+            }))
+            .unwrap_or_else(|payload| Err(format!("媒体解码异常：{}", panic_message(payload))));
+            match enrichment {
                 Ok((width, height, duration_ms, generated_thumbnail)) => {
                     connection
                         .execute(
@@ -1556,54 +1675,63 @@ fn enrich_pending_images(
                                 modified_ms
                             ],
                         )
-                        .map_err(|error| error.to_string())?;
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
                 }
                 Err(error) => {
-                    let _ = connection.execute(
-                        "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1 WHERE path = ?2",
-                        params![error, path],
-                    );
+                    connection
+                        .execute(
+                            "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1 WHERE path = ?2",
+                            params![error, path],
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
                 }
             }
         } else {
-            match decode_preview(Path::new(&path)) {
-                Ok(image) => {
-                    let (width, height) = image.dimensions();
-                    let thumbnail_path = media_thumbnail_path(&thumbnail_dir, &path, modified_ms);
-                    let thumbnail = image.thumbnail(480, 320);
-                    if thumbnail
-                        .save_with_format(&thumbnail_path, ImageFormat::Png)
-                        .is_ok()
-                    {
-                        connection
-                            .execute(
-                                "UPDATE indexed_assets SET width = ?1, height = ?2,
-                             thumbnail_path = ?3, metadata_status = 'ready'
-                             WHERE path = ?4 AND modified_ms = ?5",
-                                params![
-                                    width as i64,
-                                    height as i64,
-                                    thumbnail_path.to_string_lossy().into_owned(),
-                                    path,
-                                    modified_ms,
-                                ],
-                            )
-                            .map_err(|error| error.to_string())?;
-                    } else {
-                        let _ = connection.execute(
-                        "UPDATE indexed_assets SET metadata_status = 'unsupported' WHERE path = ?1",
-                        params![path],
-                    );
-                    }
-                }
-                Err(error) => {
-                    let _ = connection.execute(
-                    "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1 WHERE path = ?2",
-                    params![error, path],
-                );
-                }
+            let thumbnail_path = media_thumbnail_path(&thumbnail_dir, &path, modified_ms);
+            match generate_image_preview(Path::new(&path), &thumbnail_path) {
+                Ok((width, height)) => connection
+                    .execute(
+                        "UPDATE indexed_assets SET width = ?1, height = ?2,
+                         thumbnail_path = ?3, metadata_status = 'ready', metadata_error = NULL
+                         WHERE path = ?4 AND modified_ms = ?5",
+                        params![
+                            width as i64,
+                            height as i64,
+                            thumbnail_path.to_string_lossy().into_owned(),
+                            path,
+                            modified_ms,
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                Err(error) => connection
+                    .execute(
+                        "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1 WHERE path = ?2",
+                        params![error, path],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
             }
+        };
+
+        if let Err(error) = item_result {
+            if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+                publish_enrichment_tasks(
+                    app,
+                    manager,
+                    &scan_id,
+                    completed,
+                    total,
+                    Some(format!("处理失败：{error}")),
+                    "failed",
+                    task_started_at_ms,
+                );
+            }
+            return Err(error);
         }
+        completed = (index + 1) as u64;
         if index % PREVIEW_REFRESH_INTERVAL == PREVIEW_REFRESH_INTERVAL - 1 {
             if let Some(channel) = on_event.as_ref() {
                 let _ = channel.send(ScanEvent::new(
@@ -1614,19 +1742,16 @@ fn enrich_pending_images(
                 ));
             }
         }
-        if (index + 1) % 4 == 0 || index + 1 == total as usize {
+        if completed == 1 || completed % 4 == 0 || completed == total {
             if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
-                let current_item = Path::new(&path)
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned());
                 publish_enrichment_tasks(
                     app,
                     manager,
                     &scan_id,
-                    (index + 1) as u64,
+                    completed,
                     total,
                     current_item,
-                    if index + 1 == total as usize {
+                    if completed == total {
                         "completed"
                     } else {
                         "running"
