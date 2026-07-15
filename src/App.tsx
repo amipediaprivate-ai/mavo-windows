@@ -23,6 +23,7 @@ import { assets as initialAssets } from "./data/assets";
 import {
   deleteSmartView,
   enrichPendingPreviews,
+  listBackgroundTasks,
   listSmartViews,
   loadAssetFacets,
   loadIndexedAssets,
@@ -31,6 +32,7 @@ import {
   saveSmartView,
   scanDuplicateAssets,
   type AssetFacets,
+  type BackgroundTask,
   type SmartView,
 } from "./lib/indexedAssets";
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
@@ -69,6 +71,7 @@ export default function App() {
   const [facets, setFacets] = useState<AssetFacets>();
   const [smartViews, setSmartViews] = useState<SmartView[]>([]);
   const [activeSmartViewId, setActiveSmartViewId] = useState<number>();
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
 
@@ -118,11 +121,35 @@ export default function App() {
   useEffect(() => {
     void refreshIndexedAssets(false);
     void listSmartViews().then(setSmartViews).catch(() => undefined);
-    void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1))
-      .then(() => refreshIndexedAssets(true))
-      .catch(() => undefined);
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen<BackgroundTask>("background-task-progress", ({ payload }) => {
+      setBackgroundTasks((current) => {
+        const next = current.filter((task) => task.id !== payload.id);
+        return [payload, ...next].sort((left, right) => right.updatedAtMs - left.updatedAtMs).slice(0, 24);
+      });
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      stop = unlisten;
+      void listBackgroundTasks().then((tasks) => {
+        setBackgroundTasks((current) => {
+          const byId = new Map(tasks.map((task) => [task.id, task]));
+          current.forEach((task) => {
+            if ((byId.get(task.id)?.updatedAtMs ?? 0) < task.updatedAtMs) byId.set(task.id, task);
+          });
+          return [...byId.values()].sort((left, right) => right.updatedAtMs - left.updatedAtMs).slice(0, 24);
+        });
+      }).catch(() => undefined);
+      void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1))
+        .then(() => refreshIndexedAssets(true))
+        .catch(() => undefined);
+    }).catch(() => undefined);
     // The first load deliberately uses the initial query state only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { disposed = true; stop?.(); };
   }, []);
 
   useEffect(() => {
@@ -367,6 +394,7 @@ export default function App() {
         activeSmartViewId={activeSmartViewId}
         onSmartViewSelect={handleSmartViewSelect}
         onDeleteSmartView={(viewId) => void handleDeleteSmartView(viewId)}
+        backgroundTasks={backgroundTasks}
       />
 
       <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>

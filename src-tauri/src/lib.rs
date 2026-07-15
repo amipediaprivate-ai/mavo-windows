@@ -45,6 +45,45 @@ struct ScanManager {
     jobs: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
+#[derive(Clone, Default)]
+struct BackgroundTaskManager {
+    tasks: Arc<Mutex<HashMap<String, BackgroundTask>>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundTask {
+    id: String,
+    task_type: String,
+    title: String,
+    status: String,
+    completed: u64,
+    total: Option<u64>,
+    current_item: Option<String>,
+    message: Option<String>,
+    started_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+fn publish_background_task(app: &AppHandle, manager: &BackgroundTaskManager, task: BackgroundTask) {
+    if let Ok(mut tasks) = manager.tasks.lock() {
+        tasks.insert(task.id.clone(), task.clone());
+        if tasks.len() > 24 {
+            let mut completed = tasks
+                .values()
+                .filter(|item| item.status != "running")
+                .map(|item| (item.id.clone(), item.updated_at_ms))
+                .collect::<Vec<_>>();
+            completed.sort_by_key(|(_, updated_at_ms)| *updated_at_ms);
+            let remove_count = tasks.len().saturating_sub(24);
+            for (id, _) in completed.into_iter().take(remove_count) {
+                tasks.remove(&id);
+            }
+        }
+    }
+    let _ = app.emit("background-task-progress", task);
+}
+
 #[derive(Default)]
 struct WatchManager {
     watcher: Mutex<Option<RecommendedWatcher>>,
@@ -1207,6 +1246,7 @@ impl WatchManager {
         app: AppHandle,
         database_path: PathBuf,
         thumbnail_dir: PathBuf,
+        task_manager: BackgroundTaskManager,
     ) -> Result<(), String> {
         let (sender, receiver) = mpsc::channel::<Event>();
         let watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
@@ -1227,13 +1267,16 @@ impl WatchManager {
                     paths.extend(next.paths);
                 }
                 if process_watched_paths(&database_path, &paths).unwrap_or(false) {
+                    let task_id = format!("watcher-preview-{}", now_ms());
                     let _ = enrich_pending_images(
                         database_path.clone(),
                         thumbnail_dir.clone(),
-                        "watcher-preview".to_string(),
+                        task_id,
                         Arc::new(ScanCounters::default()),
                         Instant::now(),
                         None,
+                        Some(app.clone()),
+                        Some(task_manager.clone()),
                     );
                     let _ = app.emit("asset-index-changed", ());
                 }
@@ -1402,6 +1445,44 @@ fn enrich_media_file(
     Ok((width, height, duration, generated))
 }
 
+fn publish_enrichment_tasks(
+    app: &AppHandle,
+    manager: &BackgroundTaskManager,
+    scan_id: &str,
+    completed: u64,
+    total: u64,
+    current_item: Option<String>,
+    status: &str,
+    started_at_ms: u64,
+) {
+    let updated_at_ms = now_ms();
+    for (task_type, title, message) in [
+        ("analysis", "分析资源", "读取尺寸、时长和媒体信息"),
+        ("thumbnail", "创建缩略图", "生成可视化预览"),
+    ] {
+        publish_background_task(
+            app,
+            manager,
+            BackgroundTask {
+                id: format!("{task_type}:{scan_id}"),
+                task_type: task_type.to_string(),
+                title: title.to_string(),
+                status: if status == "finished" {
+                    "completed".to_string()
+                } else {
+                    status.to_string()
+                },
+                completed,
+                total: Some(total),
+                current_item: current_item.clone(),
+                message: Some(message.to_string()),
+                started_at_ms,
+                updated_at_ms,
+            },
+        );
+    }
+}
+
 fn enrich_pending_images(
     database_path: PathBuf,
     thumbnail_dir: PathBuf,
@@ -1409,6 +1490,8 @@ fn enrich_pending_images(
     counters: Arc<ScanCounters>,
     started: Instant,
     on_event: Option<Channel<ScanEvent>>,
+    app: Option<AppHandle>,
+    task_manager: Option<BackgroundTaskManager>,
 ) -> Result<(), String> {
     enter_background_mode();
     fs::create_dir_all(&thumbnail_dir).map_err(|error| error.to_string())?;
@@ -1435,6 +1518,23 @@ fn enrich_pending_images(
             .map_err(|error| error.to_string())?;
         rows
     };
+
+    let total = paths.len() as u64;
+    let task_started_at_ms = now_ms();
+    if total > 0 {
+        if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+            publish_enrichment_tasks(
+                app,
+                manager,
+                &scan_id,
+                0,
+                total,
+                None,
+                "running",
+                task_started_at_ms,
+            );
+        }
+    }
 
     for (index, (path, modified_ms, kind)) in paths.into_iter().enumerate() {
         thread::sleep(Duration::from_millis(4));
@@ -1514,6 +1614,27 @@ fn enrich_pending_images(
                 ));
             }
         }
+        if (index + 1) % 4 == 0 || index + 1 == total as usize {
+            if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+                let current_item = Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                publish_enrichment_tasks(
+                    app,
+                    manager,
+                    &scan_id,
+                    (index + 1) as u64,
+                    total,
+                    current_item,
+                    if index + 1 == total as usize {
+                        "completed"
+                    } else {
+                        "running"
+                    },
+                    task_started_at_ms,
+                );
+            }
+        }
     }
     if let Some(channel) = on_event {
         let _ = channel.send(ScanEvent::new(
@@ -1533,6 +1654,8 @@ fn run_scan(
     cancel: Arc<AtomicBool>,
     on_event: Channel<ScanEvent>,
     thumbnail_dir: Option<PathBuf>,
+    app: Option<AppHandle>,
+    task_manager: Option<BackgroundTaskManager>,
 ) -> Result<(), String> {
     let roots = resolve_roots(&request)?;
     let started = Instant::now();
@@ -1545,6 +1668,26 @@ fn run_scan(
         ScanSpeed::Slow => "slow",
         ScanSpeed::Fast => "fast",
     };
+    let task_started_at_ms = now_ms();
+
+    if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+        publish_background_task(
+            app,
+            manager,
+            BackgroundTask {
+                id: format!("index:{scan_id}"),
+                task_type: "index".to_string(),
+                title: "建立资源索引".to_string(),
+                status: "running".to_string(),
+                completed: 0,
+                total: None,
+                current_item: None,
+                message: Some("正在遍历文件并写入本地索引".to_string()),
+                started_at_ms: task_started_at_ms,
+                updated_at_ms: task_started_at_ms,
+            },
+        );
+    }
 
     let connection = setup_database(&database_path)?;
     connection
@@ -1596,6 +1739,8 @@ fn run_scan(
 
     let roots = Arc::new(roots);
     let is_slow = matches!(request.speed, ScanSpeed::Slow);
+    let progress_app = app.clone();
+    let progress_task_manager = task_manager.clone();
     builder.build_parallel().run(|| {
         if is_slow {
             enter_background_mode();
@@ -1606,6 +1751,8 @@ fn run_scan(
         let cancel = Arc::clone(&cancel);
         let on_event = on_event.clone();
         let scan_id = scan_id.clone();
+        let progress_app = progress_app.clone();
+        let progress_task_manager = progress_task_manager.clone();
 
         Box::new(move |entry_result| {
             if cancel.load(Ordering::Relaxed) {
@@ -1695,6 +1842,31 @@ fn run_scan(
                 let mut event = ScanEvent::new("progress", &scan_id, &counters, started);
                 event.current_path = Some(path.to_string_lossy().into_owned());
                 let _ = on_event.send(event);
+                if let (Some(app), Some(manager)) =
+                    (progress_app.as_ref(), progress_task_manager.as_ref())
+                {
+                    publish_background_task(
+                        app,
+                        manager,
+                        BackgroundTask {
+                            id: format!("index:{scan_id}"),
+                            task_type: "index".to_string(),
+                            title: "建立资源索引".to_string(),
+                            status: "running".to_string(),
+                            completed: scanned,
+                            total: None,
+                            current_item: path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned()),
+                            message: Some(format!(
+                                "已发现 {} 个资源",
+                                counters.matched.load(Ordering::Relaxed)
+                            )),
+                            started_at_ms: task_started_at_ms,
+                            updated_at_ms: now_ms(),
+                        },
+                    );
+                }
             }
 
             WalkState::Continue
@@ -1723,6 +1895,8 @@ fn run_scan(
         let enrichment_scan_id = scan_id.clone();
         let enrichment_counters = Arc::clone(&counters);
         let enrichment_channel = on_event.clone();
+        let enrichment_app = app.clone();
+        let enrichment_task_manager = task_manager.clone();
         thread::spawn(move || {
             let _ = enrich_pending_images(
                 enrichment_database,
@@ -1731,8 +1905,36 @@ fn run_scan(
                 enrichment_counters,
                 started,
                 Some(enrichment_channel),
+                enrichment_app,
+                enrichment_task_manager,
             );
         });
+    }
+
+    if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+        publish_background_task(
+            app,
+            manager,
+            BackgroundTask {
+                id: format!("index:{scan_id}"),
+                task_type: "index".to_string(),
+                title: "建立资源索引".to_string(),
+                status: if status == "finished" {
+                    "completed".to_string()
+                } else {
+                    status.to_string()
+                },
+                completed: counters.scanned.load(Ordering::Relaxed),
+                total: Some(counters.scanned.load(Ordering::Relaxed)),
+                current_item: None,
+                message: Some(format!(
+                    "已索引 {} 个资源",
+                    counters.matched.load(Ordering::Relaxed)
+                )),
+                started_at_ms: task_started_at_ms,
+                updated_at_ms: now_ms(),
+            },
+        );
     }
 
     let mut final_event = ScanEvent::new(status, &scan_id, &counters, started);
@@ -1757,6 +1959,7 @@ fn start_scan(
     app: AppHandle,
     manager: State<'_, ScanManager>,
     watch_manager: State<'_, WatchManager>,
+    task_manager: State<'_, BackgroundTaskManager>,
 ) -> Result<String, String> {
     let scan_id = create_scan_id();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1782,6 +1985,10 @@ fn start_scan(
     let worker_scan_id = scan_id.clone();
     let failure_channel = on_event.clone();
     let failure_database_path = database_path.clone();
+    let worker_app = app.clone();
+    let worker_task_manager = task_manager.inner().clone();
+    let failure_app = app;
+    let failure_task_manager = worker_task_manager.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = run_scan(
@@ -1791,6 +1998,8 @@ fn start_scan(
             cancel,
             on_event,
             Some(thumbnail_dir),
+            Some(worker_app),
+            Some(worker_task_manager),
         ) {
             if let Ok(connection) = setup_database(&failure_database_path) {
                 let _ = connection.execute(
@@ -1808,6 +2017,22 @@ fn start_scan(
                 elapsed_ms: 0,
                 message: Some(error),
             });
+            publish_background_task(
+                &failure_app,
+                &failure_task_manager,
+                BackgroundTask {
+                    id: format!("index:{worker_scan_id}"),
+                    task_type: "index".to_string(),
+                    title: "建立资源索引".to_string(),
+                    status: "failed".to_string(),
+                    completed: 0,
+                    total: None,
+                    current_item: None,
+                    message: Some("索引任务失败".to_string()),
+                    started_at_ms: now_ms(),
+                    updated_at_ms: now_ms(),
+                },
+            );
         }
         if let Ok(mut jobs) = manager.jobs.lock() {
             jobs.remove(&worker_scan_id);
@@ -1834,6 +2059,7 @@ fn cancel_scan(scan_id: String, manager: State<'_, ScanManager>) -> Result<(), S
 async fn enrich_pending_previews(
     app: AppHandle,
     on_event: Channel<ScanEvent>,
+    task_manager: State<'_, BackgroundTaskManager>,
 ) -> Result<(), String> {
     let app_data_dir = app
         .path()
@@ -1842,6 +2068,7 @@ async fn enrich_pending_previews(
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let database_path = app_data_dir.join("mavo-index.sqlite3");
     let thumbnail_dir = app_data_dir.join("thumbnails");
+    let task_manager = task_manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         enrich_pending_images(
             database_path,
@@ -1850,10 +2077,27 @@ async fn enrich_pending_previews(
             Arc::new(ScanCounters::default()),
             Instant::now(),
             Some(on_event),
+            Some(app),
+            Some(task_manager),
         )
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn list_background_tasks(
+    manager: State<'_, BackgroundTaskManager>,
+) -> Result<Vec<BackgroundTask>, String> {
+    let mut tasks = manager
+        .tasks
+        .lock()
+        .map_err(|_| "后台任务状态不可用".to_string())?
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| right.updated_at_ms.cmp(&left.updated_at_ms));
+    Ok(tasks)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1861,6 +2105,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(ScanManager::default())
+        .manage(BackgroundTaskManager::default())
         .manage(WatchManager::default())
         .setup(|app| {
             let resource_media_dir = app.path().resource_dir()?.join("ffmpeg");
@@ -1880,8 +2125,14 @@ pub fn run() {
             let thumbnail_dir = app_data_dir.join("thumbnails");
             setup_database(&database_path).map_err(std::io::Error::other)?;
             let watch_manager = app.state::<WatchManager>();
+            let task_manager = app.state::<BackgroundTaskManager>().inner().clone();
             watch_manager
-                .initialize(app.handle().clone(), database_path.clone(), thumbnail_dir)
+                .initialize(
+                    app.handle().clone(),
+                    database_path.clone(),
+                    thumbnail_dir,
+                    task_manager,
+                )
                 .map_err(std::io::Error::other)?;
             let connection = setup_database(&database_path).map_err(std::io::Error::other)?;
             let roots: Vec<PathBuf> = {
@@ -1912,6 +2163,7 @@ pub fn run() {
             relink_asset,
             remove_asset_from_index,
             scan_duplicates,
+            list_background_tasks,
             enrich_pending_previews,
             start_scan,
             cancel_scan
@@ -1956,6 +2208,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             event_channel,
             None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -1999,6 +2253,8 @@ mod tests {
             cancellation,
             event_channel,
             None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2041,6 +2297,8 @@ mod tests {
                 database.clone(),
                 Arc::new(AtomicBool::new(false)),
                 event_channel,
+                None,
+                None,
                 None,
             )
             .unwrap();
@@ -2095,6 +2353,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             event_channel.clone(),
             None,
+            None,
+            None,
         )
         .unwrap();
         enrich_pending_images(
@@ -2104,6 +2364,8 @@ mod tests {
             Arc::new(ScanCounters::default()),
             Instant::now(),
             Some(event_channel),
+            None,
+            None,
         )
         .unwrap();
 
@@ -2164,6 +2426,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             event_channel.clone(),
             None,
+            None,
+            None,
         )
         .unwrap();
         enrich_pending_images(
@@ -2173,6 +2437,8 @@ mod tests {
             Arc::new(ScanCounters::default()),
             Instant::now(),
             Some(event_channel),
+            None,
+            None,
         )
         .unwrap();
 
@@ -2209,6 +2475,8 @@ mod tests {
             database.clone(),
             Arc::new(AtomicBool::new(false)),
             event_channel,
+            None,
+            None,
             None,
         )
         .unwrap();

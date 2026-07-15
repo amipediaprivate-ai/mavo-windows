@@ -76,6 +76,19 @@ export interface DuplicateScanSummary {
   duplicateFiles: number;
 }
 
+export interface BackgroundTask {
+  id: string;
+  taskType: "index" | "analysis" | "thumbnail";
+  title: string;
+  status: "running" | "completed" | "cancelled" | "failed";
+  completed: number;
+  total?: number;
+  currentItem?: string;
+  message?: string;
+  startedAtMs: number;
+  updatedAtMs: number;
+}
+
 interface PreviewEnrichmentEvent {
   eventType: "assetsCommitted";
 }
@@ -176,6 +189,10 @@ export async function deleteSmartView(viewId: number) {
 
 export async function scanDuplicateAssets() {
   return invoke<DuplicateScanSummary>("scan_duplicates");
+}
+
+export async function listBackgroundTasks() {
+  return invoke<BackgroundTask[]>("list_background_tasks");
 }
 
 export async function relinkIndexedAsset(asset: Asset, newPath: string) {

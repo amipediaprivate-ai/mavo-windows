@@ -1,10 +1,16 @@
 import {
+  Activity,
   Bell,
+  CheckCircle2,
   ChevronDown,
+  CircleAlert,
+  Database,
   FolderSearch,
   HardDrive,
+  Image,
   Import,
   LibraryBig,
+  LoaderCircle,
   Plus,
   RefreshCw,
   Search,
@@ -12,7 +18,8 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import type { SmartView } from "../lib/indexedAssets";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { BackgroundTask, SmartView } from "../lib/indexedAssets";
 import type { ScanScope } from "../types";
 
 interface AppHeaderProps {
@@ -27,6 +34,7 @@ interface AppHeaderProps {
   activeSmartViewId?: number;
   onSmartViewSelect: (viewId: number) => void;
   onDeleteSmartView: (viewId: number) => void;
+  backgroundTasks: BackgroundTask[];
 }
 
 const globalNav = ["资产", "收藏", "项目"];
@@ -44,7 +52,47 @@ export function AppHeader({
   activeSmartViewId,
   onSmartViewSelect,
   onDeleteSmartView,
+  backgroundTasks,
 }: AppHeaderProps) {
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const tasksRef = useRef<HTMLDivElement>(null);
+  const runningTasks = backgroundTasks.filter((task) => task.status === "running");
+  const visibleTasks = useMemo(() => {
+    const ordered = [...backgroundTasks].sort((left, right) => {
+      const statusDifference = Number(right.status === "running") - Number(left.status === "running");
+      return statusDifference || right.updatedAtMs - left.updatedAtMs;
+    });
+    return ordered.slice(0, 8);
+  }, [backgroundTasks]);
+  const knownProgress = runningTasks.filter((task) => task.total !== undefined && task.total > 0);
+  const overallProgress = knownProgress.length
+    ? knownProgress.reduce((sum, task) => sum + Math.min(task.completed / (task.total ?? 1), 1), 0) / knownProgress.length
+    : runningTasks.length ? undefined : 1;
+
+  useEffect(() => {
+    if (!tasksOpen) return;
+    const closePanel = (event: MouseEvent) => {
+      if (!tasksRef.current?.contains(event.target as Node)) setTasksOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTasksOpen(false);
+    };
+    document.addEventListener("mousedown", closePanel);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closePanel);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [tasksOpen]);
+
+  const taskIcon = (task: BackgroundTask) => {
+    if (task.status === "failed" || task.status === "cancelled") return <CircleAlert size={15} />;
+    if (task.status === "completed") return <CheckCircle2 size={15} />;
+    if (task.taskType === "index") return <Database size={15} />;
+    if (task.taskType === "thumbnail") return <Image size={15} />;
+    return <Activity size={15} />;
+  };
+
   return (
     <>
       <header className="topbar">
@@ -109,6 +157,68 @@ export function AppHeader({
               {item}
             </button>
           ))}
+          <div className="background-tasks" ref={tasksRef}>
+            <button
+              className={`background-task-trigger ${tasksOpen ? "open" : ""} ${runningTasks.length ? "running" : ""}`}
+              onClick={() => setTasksOpen((open) => !open)}
+              aria-expanded={tasksOpen}
+              aria-haspopup="dialog"
+            >
+              <span className="task-trigger-icon">
+                {runningTasks.length ? <LoaderCircle size={14} /> : <CheckCircle2 size={14} />}
+              </span>
+              后台任务
+              {runningTasks.length > 0 && <strong>{runningTasks.length}</strong>}
+            </button>
+            {tasksOpen && (
+              <section className="background-task-panel" role="dialog" aria-label="后台任务进度">
+                <header>
+                  <div>
+                    <strong>后台任务</strong>
+                    <span>{runningTasks.length ? `${runningTasks.length} 项正在进行` : "当前没有运行中的任务"}</span>
+                  </div>
+                  {runningTasks.length > 0 && overallProgress !== undefined && (
+                    <b>{Math.round(overallProgress * 100)}%</b>
+                  )}
+                </header>
+                <div className="background-task-list">
+                  {visibleTasks.length === 0 ? (
+                    <div className="background-task-empty">
+                      <CheckCircle2 size={22} />
+                      <strong>后台已就绪</strong>
+                      <span>扫描、分析和缩略图任务会显示在这里</span>
+                    </div>
+                  ) : visibleTasks.map((task) => {
+                    const progress = task.total === undefined
+                      ? undefined
+                      : task.total === 0
+                        ? Number(task.status === "completed")
+                        : Math.min(task.completed / task.total, 1);
+                    const statusLabel = task.status === "running" ? "进行中" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
+                    return (
+                      <article className={`background-task-item ${task.status}`} key={task.id}>
+                        <span className="background-task-icon">{taskIcon(task)}</span>
+                        <div className="background-task-content">
+                          <div className="background-task-title">
+                            <strong>{task.title}</strong>
+                            <span>{statusLabel}</span>
+                          </div>
+                          <p title={task.currentItem || task.message}>{task.currentItem || task.message}</p>
+                          <div className={`background-task-track ${progress === undefined && task.status === "running" ? "indeterminate" : ""}`}>
+                            <span style={progress === undefined ? undefined : { width: `${progress * 100}%` }} />
+                          </div>
+                          <div className="background-task-meta">
+                            <span>{task.total !== undefined ? `${task.completed.toLocaleString("zh-CN")} / ${task.total.toLocaleString("zh-CN")}` : `已检查 ${task.completed.toLocaleString("zh-CN")} 项`}</span>
+                            {progress !== undefined && <strong>{Math.round(progress * 100)}%</strong>}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+          </div>
         </nav>
         <div className="module-actions">
           {smartViews.length > 0 && (
