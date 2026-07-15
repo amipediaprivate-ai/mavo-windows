@@ -11,6 +11,7 @@ import {
 import type { Asset } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
 import { AudioDetailPlayer } from "./AudioPlayer";
+import { AnimatedImagePlayer } from "./AnimatedImagePlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
 
 interface DetailPanelProps {
@@ -49,7 +50,11 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             <AudioDetailPlayer asset={asset} />
           ) : (
             <div className="detail-preview" style={{ aspectRatio: assetAspectRatio(asset) }}>
-              <AssetThumbnail asset={asset} large />
+              {asset.kind === "动图" ? (
+                <AnimatedImagePlayer asset={asset} variant="detail" />
+              ) : (
+                <AssetThumbnail asset={asset} large />
+              )}
               {asset.availability !== "missing" && (
                 <button className="preview-expand" onClick={() => onViewOriginal(asset)} aria-label="查看原图" title="查看原图">
                   <ExternalLink size={14} />

@@ -15,6 +15,13 @@ export function canPlayAudio(asset: Asset) {
   return asset.kind === "音频" && asset.availability !== "missing" && indexedAssetId(asset) !== undefined;
 }
 
+export function canPlayAnimatedImage(asset: Asset) {
+  return asset.kind === "动图"
+    && asset.format.toUpperCase() === "GIF"
+    && asset.availability !== "missing"
+    && indexedAssetId(asset) !== undefined;
+}
+
 export function audioPlaybackUrl(asset: Asset) {
   const assetId = indexedAssetId(asset);
   if (assetId === undefined || asset.kind !== "音频") throw new Error("该资源没有可播放的本地音频");

@@ -4,6 +4,7 @@ import { Clock3, FolderOpen, Play } from "lucide-react";
 import type { Asset, AssetView } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
 import { AudioCardPlayer } from "./AudioPlayer";
+import { AnimatedImagePlayer } from "./AnimatedImagePlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
 
 interface AssetVirtualGridProps {
@@ -55,12 +56,18 @@ function AssetCard({
         className={`thumbnail-wrap ${asset.kind === "音频" ? "audio-thumbnail-wrap" : ""}`}
         style={view === "masonry" ? { aspectRatio: assetAspectRatio(asset) } : undefined}
       >
-        {asset.kind === "音频" ? <AudioCardPlayer asset={asset} /> : <AssetThumbnail asset={asset} />}
+        {asset.kind === "音频" ? (
+          <AudioCardPlayer asset={asset} />
+        ) : asset.kind === "动图" ? (
+          <AnimatedImagePlayer asset={asset} variant="card" />
+        ) : (
+          <AssetThumbnail asset={asset} />
+        )}
         {showsCardMetadata && (
           <>
             <span className="format-pill">{asset.format}</span>
             <span className="source-pill">{asset.source === "平台下载" ? "平台" : "本地"}</span>
-            {asset.kind === "视频" || asset.kind === "动图" ? (
+            {asset.kind === "视频" ? (
               <span className="play-indicator"><Play size={13} fill="currentColor" /></span>
             ) : null}
           </>
