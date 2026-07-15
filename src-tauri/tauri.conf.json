@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "ai.amipedia.mavo",
   "build": {
-    "beforeDevCommand": "pnpm.cmd dev",
+    "beforeDevCommand": "pnpm.cmd prepare:ffmpeg && pnpm.cmd dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm.cmd build",
+    "beforeBuildCommand": "pnpm.cmd prepare:ffmpeg && pnpm.cmd build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,5 +29,12 @@
       }
     }
   },
-  "bundle": { "active": false, "targets": "all" }
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "resources/ffmpeg/": "ffmpeg/",
+      "../THIRD_PARTY_NOTICES.md": ""
+    }
+  }
 }

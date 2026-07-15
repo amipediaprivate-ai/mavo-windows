@@ -15,7 +15,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, sync_channel, Receiver},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -26,6 +26,7 @@ use tauri::{
 };
 
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
+static MEDIA_TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 const MAX_PSD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PSD_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
@@ -1306,12 +1307,27 @@ fn media_thumbnail_path(thumbnail_dir: &Path, path: &str, modified_ms: i64) -> P
     thumbnail_dir.join(format!("{:016x}.png", hasher.finish()))
 }
 
+fn media_command(name: &str) -> Command {
+    if let Some(directory) = MEDIA_TOOL_DIR.get() {
+        let file_name = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        let bundled = directory.join(file_name);
+        if bundled.is_file() {
+            return Command::new(bundled);
+        }
+    }
+    Command::new(name)
+}
+
 fn enrich_media_file(
     path: &Path,
     kind: &str,
     thumbnail_path: &Path,
 ) -> Result<(Option<i64>, Option<i64>, i64, Option<String>), String> {
-    let output = Command::new("ffprobe")
+    let output = media_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -1322,7 +1338,7 @@ fn enrich_media_file(
         ])
         .arg(path)
         .output()
-        .map_err(|_| "未找到 ffprobe，请安装 FFmpeg 或将其加入 PATH".to_string())?;
+        .map_err(|_| "内置 ffprobe 不可用，请重新安装 Mavo".to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -1357,7 +1373,7 @@ fn enrich_media_file(
         .map(|seconds| (seconds * 1000.0).round() as i64)
         .unwrap_or_default();
 
-    let mut command = Command::new("ffmpeg");
+    let mut command = media_command("ffmpeg");
     command.args(["-v", "error", "-y"]);
     if kind == "视频" {
         command.args(["-ss", "1"]).arg("-i").arg(path).args([
@@ -1847,6 +1863,17 @@ pub fn run() {
         .manage(ScanManager::default())
         .manage(WatchManager::default())
         .setup(|app| {
+            let resource_media_dir = app.path().resource_dir()?.join("ffmpeg");
+            let development_media_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("ffmpeg");
+            for candidate in [resource_media_dir, development_media_dir] {
+                if candidate.join("ffmpeg.exe").is_file() && candidate.join("ffprobe.exe").is_file()
+                {
+                    let _ = MEDIA_TOOL_DIR.set(candidate);
+                    break;
+                }
+            }
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("mavo-index.sqlite3");
@@ -2238,6 +2265,44 @@ mod tests {
         fs::write(&third, b"different content").unwrap();
         assert_eq!(hash_file(&first).unwrap(), hash_file(&second).unwrap());
         assert_ne!(hash_file(&first).unwrap(), hash_file(&third).unwrap());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn bundled_ffmpeg_analyzes_audio_and_generates_waveform() {
+        let media_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("ffmpeg");
+        if !media_dir.join("ffmpeg.exe").is_file() || !media_dir.join("ffprobe.exe").is_file() {
+            return;
+        }
+        let _ = MEDIA_TOOL_DIR.set(media_dir);
+        let workspace = test_workspace("bundled-ffmpeg");
+        fs::create_dir_all(&workspace).unwrap();
+        let audio = workspace.join("tone.wav");
+        let thumbnail = workspace.join("waveform.png");
+        let generated = media_command("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.25",
+            ])
+            .arg(&audio)
+            .status()
+            .unwrap();
+        assert!(generated.success());
+        let (_, _, duration_ms, thumbnail_path) =
+            enrich_media_file(&audio, "音频", &thumbnail).unwrap();
+        assert!(duration_ms >= 200);
+        assert_eq!(
+            thumbnail_path.as_deref(),
+            Some(thumbnail.to_string_lossy().as_ref())
+        );
+        assert!(thumbnail.is_file());
         fs::remove_dir_all(workspace).unwrap();
     }
 }
