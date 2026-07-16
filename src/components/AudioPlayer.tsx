@@ -68,7 +68,7 @@ function OriginalLoudness({ asset, variant }: { asset: Asset; variant: "card" | 
   );
 }
 
-export function AudioCardPlayer({ asset }: { asset: Asset }) {
+export function AudioCardPlayer({ asset, onActivate }: { asset: Asset; onActivate?: () => void }) {
   const player = useAudioPlayer();
   const active = player.isActive(asset);
   const playing = active && player.status === "playing";
@@ -88,6 +88,7 @@ export function AudioCardPlayer({ asset }: { asset: Asset }) {
           disabled={!playable}
           onClick={(event) => {
             event.stopPropagation();
+            onActivate?.();
             player.toggle(asset);
           }}
           aria-label={playing ? "暂停" : "播放"}

@@ -1143,12 +1143,7 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
-    let order_sql = match query.sort.as_deref() {
-        Some("name") => "name COLLATE NOCASE ASC, path ASC",
-        Some("size") => "size_bytes DESC, path ASC",
-        Some("duplicates") => "content_hash ASC, size_bytes DESC, path ASC",
-        _ => "modified_ms DESC, path ASC",
-    };
+    let order_sql = asset_order_sql(query.sort.as_deref());
     let sql = format!(
         "SELECT rowid, asset_uid, path, name, extension, kind, size_bytes, modified_ms, indexed_at_ms,
                 width, height, duration_ms, thumbnail_path, metadata_status,
@@ -1243,6 +1238,16 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
         next_offset: (consumed < total as u32).then_some(consumed),
         total: total as u64,
     })
+}
+
+fn asset_order_sql(sort: Option<&str>) -> &'static str {
+    match sort {
+        Some("name") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, name COLLATE NOCASE ASC, path ASC",
+        Some("size") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, size_bytes DESC, path ASC",
+        Some("duration") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, CASE WHEN duration_ms IS NULL THEN 1 ELSE 0 END ASC, duration_ms DESC, path ASC",
+        Some("duplicates") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, content_hash ASC, size_bytes DESC, path ASC",
+        _ => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, modified_ms DESC, path ASC",
+    }
 }
 
 fn query_facets(
@@ -4117,6 +4122,26 @@ pub fn run() {
 mod tests {
     use super::*;
     use tauri::ipc::InvokeResponseBody;
+
+    #[test]
+    fn asset_sorting_keeps_failed_metadata_at_the_end() {
+        for sort in [
+            None,
+            Some("newest"),
+            Some("name"),
+            Some("size"),
+            Some("duration"),
+            Some("duplicates"),
+        ] {
+            assert!(
+                asset_order_sql(sort)
+                    .starts_with("CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC"),
+                "failed metadata must sort last for {sort:?}"
+            );
+        }
+        assert!(asset_order_sql(Some("duration"))
+            .contains("CASE WHEN duration_ms IS NULL THEN 1 ELSE 0 END ASC, duration_ms DESC"));
+    }
 
     #[test]
     fn media_range_parser_supports_seek_requests() {

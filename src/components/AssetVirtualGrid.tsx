@@ -41,12 +41,14 @@ function AssetCard({
   selected,
   view,
   onSelect,
+  onActivate,
   onOpen,
 }: {
   asset: Asset;
   selected: boolean;
   view: AssetView;
   onSelect: (event: MouseEvent<HTMLElement>) => void;
+  onActivate: () => void;
   onOpen: () => void;
 }) {
   const showsCardMetadata = view !== "list";
@@ -60,20 +62,22 @@ function AssetCard({
         if (event.key === "Enter") onSelect(event as unknown as MouseEvent<HTMLElement>);
       }}
     >
-      <button
-        className={`asset-select-check ${selected ? "checked" : ""}`}
-        aria-label={selected ? "取消选择" : "选择资源"}
-        onClick={(event) => {
-          event.stopPropagation();
-          onSelect(event);
-        }}
-      >{selected ? "✓" : ""}</button>
+      {view !== "list" && (
+        <button
+          className={`asset-select-check ${selected ? "checked" : ""}`}
+          aria-label={selected ? "取消选择" : "选择资源"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect(event);
+          }}
+        >{selected ? "✓" : ""}</button>
+      )}
       <div
         className={`thumbnail-wrap ${asset.kind === "音频" ? "audio-thumbnail-wrap" : ""}`}
         style={view === "masonry" ? { aspectRatio: assetAspectRatio(asset) } : undefined}
       >
         {asset.kind === "音频" ? (
-          <AudioCardPlayer asset={asset} />
+          <AudioCardPlayer asset={asset} onActivate={onActivate} />
         ) : asset.kind === "视频" ? (
           <VideoCardPlayer asset={asset} />
         ) : asset.kind === "动图" ? (
@@ -231,6 +235,7 @@ function AssetVirtualGridComponent({
                   selected={selectedIds.has(asset.id) || selectedId === asset.id}
                   view={view}
                   onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
+                  onActivate={() => onSelect(asset, "replace")}
                   onOpen={() => onOpen(asset)}
                 />
               </div>
@@ -255,6 +260,7 @@ function AssetVirtualGridComponent({
                     selected={selectedIds.has(asset.id) || selectedId === asset.id}
                     view={view}
                     onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
+                    onActivate={() => onSelect(asset, "replace")}
                     onOpen={() => onOpen(asset)}
                   />
                 ))}

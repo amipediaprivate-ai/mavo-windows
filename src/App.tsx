@@ -67,6 +67,10 @@ function directoryLabel(path: string) {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
+function hasFailedMetadata(asset: (typeof initialAssets)[number]) {
+  return asset.metadataStatus === "unsupported";
+}
+
 const categoryKinds: Partial<Record<string, AssetKind>> = {
   图片: "图片",
   动图: "动图",
@@ -156,6 +160,10 @@ export default function App() {
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
   const activeCategoryKind = categoryKinds[activeModule];
+  const canSortByDuration = activeCategoryKind === "音频";
+  useEffect(() => {
+    if (sort === "duration" && !canSortByDuration) setSort("newest");
+  }, [canSortByDuration, sort]);
   const effectiveFilters = useMemo(() => activeCategoryKind
     ? {
         ...filters,
@@ -362,8 +370,11 @@ export default function App() {
     if (indexedMode) return result;
 
     return [...result].sort((a, b) => {
+      const failedMetadataOrder = Number(hasFailedMetadata(a)) - Number(hasFailedMetadata(b));
+      if (failedMetadataOrder !== 0) return failedMetadataOrder;
       if (sort === "name") return a.name.localeCompare(b.name, "zh-CN");
       if (sort === "size") return Number.parseFloat(b.weight) - Number.parseFloat(a.weight);
+      if (sort === "duration") return (b.durationMs ?? -1) - (a.durationMs ?? -1);
       return b.importedAt.localeCompare(a.importedAt);
     });
   }, [activeCategoryKind, activeModule, filters, indexedMode, libraryAssets, query, sort]);
@@ -703,6 +714,7 @@ export default function App() {
                 <option value="newest">导入时间：从新到旧</option>
                 <option value="name">名称：A 到 Z</option>
                 <option value="size">文件大小：从大到小</option>
+                {canSortByDuration && <option value="duration">时长：从长到短</option>}
               </select>
               <ChevronDown size={14} />
             </label>
