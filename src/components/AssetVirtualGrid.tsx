@@ -62,7 +62,7 @@ function AssetCard({
         if (event.key === "Enter") onSelect(event as unknown as MouseEvent<HTMLElement>);
       }}
     >
-      {view !== "list" && (
+      {view === "masonry" && (
         <button
           className={`asset-select-check ${selected ? "checked" : ""}`}
           aria-label={selected ? "取消选择" : "选择资源"}
