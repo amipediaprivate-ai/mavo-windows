@@ -1718,12 +1718,14 @@ select:focus-visible,
   width: 100%;
   display: grid;
   gap: 12px;
+  contain: layout;
 }
 
 .masonry-item {
   position: absolute;
   top: 0;
   left: 0;
+  contain: layout;
 }
 
 .asset-card {
@@ -2351,11 +2353,18 @@ select:focus-visible,
   backdrop-filter: blur(6px);
 }
 
-.asset-page-loading {
+.asset-loading-anchor {
   position: sticky;
-  bottom: 10px;
-  width: fit-content;
-  margin: -34px auto 8px;
+  bottom: 8px;
+  z-index: 20;
+  height: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.asset-page-loading {
+  transform: translateY(-100%);
   padding: 7px 12px;
   color: #556174;
   border: 1px solid #dfe4ec;

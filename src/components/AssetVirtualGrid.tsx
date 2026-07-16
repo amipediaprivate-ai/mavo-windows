@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Clock3, FolderOpen } from "lucide-react";
 import type { Asset, AssetView } from "../types";
@@ -109,7 +109,7 @@ function AssetCard({
   );
 }
 
-export function AssetVirtualGrid({
+function AssetVirtualGridComponent({
   assets,
   selectedId,
   selectedIds = new Set<string>(),
@@ -141,25 +141,49 @@ export function AssetVirtualGrid({
   const rowCount = Math.ceil(assets.length / columns);
   const masonry = view === "masonry";
   const virtualCount = masonry ? assets.length : rowCount;
+  const getScrollElement = useCallback(() => scrollRef.current, []);
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+
+  const itemKeys = useMemo(() => Array.from({ length: virtualCount }, (_, index) => {
+    if (masonry) {
+      const asset = assets[index];
+      return asset ? `${asset.id}:${assetAspectRatio(asset)}` : `${view}-${index}`;
+    }
+    const rowAssets = assets.slice(index * columns, (index + 1) * columns);
+    return rowAssets.length
+      ? `${view}:${rowAssets.map((asset) => `${asset.id}:${asset.kind}`).join("|")}`
+      : `${view}-row-${index}`;
+  }), [assets, columns, masonry, view, virtualCount]);
+  const itemKeySignature = useMemo(() => itemKeys.join("\u001f"), [itemKeys]);
+  const itemKeysRef = useRef(itemKeys);
+  itemKeysRef.current = itemKeys;
+
+  const estimateSize = useCallback((index: number) => masonry
+    ? masonryCardHeight(assetsRef.current[index], columnWidth)
+    : view === "list"
+      ? listRowHeight(assetsRef.current[index])
+      : rowHeight, [columnWidth, itemKeySignature, masonry, rowHeight, view]);
+  const getItemKey = useCallback(
+    (index: number) => itemKeysRef.current[index] ?? `${itemKeySignature}:${index}`,
+    [itemKeySignature],
+  );
 
   const virtualizer = useVirtualizer({
     count: virtualCount,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => masonry
-      ? masonryCardHeight(assets[index], columnWidth)
-      : view === "list"
-        ? listRowHeight(assets[index])
-        : rowHeight,
-    getItemKey: (index) => masonry ? assets[index]?.id ?? index : `row-${index}`,
+    getScrollElement,
+    estimateSize,
+    getItemKey,
     lanes: masonry ? columns : 1,
     laneAssignmentMode: "estimate",
+    anchorTo: "end",
     gap: masonry ? gap : 0,
     overscan: 4,
   });
 
   useEffect(() => {
     virtualizer.measure();
-  }, [assets, cardWidth, columns, view, virtualizer]);
+  }, [cardWidth, columns, view, virtualizer]);
 
   const virtualRows = virtualizer.getVirtualItems();
   const lastVirtualIndex = virtualRows.reduce((last, item) => Math.max(last, item.index), -1);
@@ -169,6 +193,16 @@ export function AssetVirtualGrid({
     }
   }, [hasMore, lastVirtualIndex, loading, onLoadMore, virtualCount]);
   const gridTemplate = useMemo(() => `repeat(${columns}, minmax(0, 1fr))`, [columns]);
+  const [showLoading, setShowLoading] = useState(false);
+
+  useEffect(() => {
+    if (!loading) {
+      setShowLoading(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowLoading(true), 280);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
 
   return (
     <div className="asset-scroll" ref={scrollRef}>
@@ -229,7 +263,9 @@ export function AssetVirtualGrid({
           })}
         </div>
       )}
-      {loading && <div className="asset-page-loading">正在读取资源…</div>}
+      {showLoading && <div className="asset-loading-anchor"><div className="asset-page-loading">正在读取资源…</div></div>}
     </div>
   );
 }
+
+export const AssetVirtualGrid = memo(AssetVirtualGridComponent);

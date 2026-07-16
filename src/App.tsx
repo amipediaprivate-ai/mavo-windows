@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -42,6 +42,7 @@ import {
   type AssetDirectoryTree,
   type AssetFacets,
   type BackgroundTask,
+  type LoadIndexedAssetsOptions,
   type SmartView,
   type TagCatalog,
   type TagInput,
@@ -70,6 +71,31 @@ const categoryKinds: Partial<Record<string, AssetKind>> = {
   音频: "音频",
   视频: "视频",
 };
+
+const ASSET_PAGE_SIZE = 200;
+const ASSET_REFRESH_CHUNK_SIZE = 500;
+
+async function loadIndexedAssetWindow(options: LoadIndexedAssetsOptions, targetCount: number) {
+  const items = [] as Awaited<ReturnType<typeof loadIndexedAssets>>["items"];
+  let nextOffset: number | undefined = 0;
+  let total = 0;
+
+  while (nextOffset !== undefined && items.length < targetCount) {
+    const requestedOffset: number = nextOffset;
+    const page = await loadIndexedAssets({
+      ...options,
+      offset: requestedOffset,
+      limit: Math.min(ASSET_REFRESH_CHUNK_SIZE, targetCount - items.length),
+    });
+    items.push(...page.items);
+    total = page.total;
+    nextOffset = page.items.length === 0 || page.nextOffset === requestedOffset
+      ? undefined
+      : page.nextOffset;
+  }
+
+  return { items, nextOffset, total };
+}
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<"资产" | "工具">("资产");
@@ -102,13 +128,17 @@ export default function App() {
   const [tagCatalog, setTagCatalog] = useState<TagCatalog>({ groups: [], tags: [] });
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
+  const assetPageLoadActive = useRef(false);
+  const indexedModeRef = useRef(indexedMode);
+  const libraryAssetCountRef = useRef(libraryAssets.length);
+  const indexedQueryOptionsRef = useRef<LoadIndexedAssetsOptions>({});
   const lastSelectedId = useRef<string | undefined>(undefined);
 
-  const showToast = (message: string) => {
+  const showToast = useCallback((message: string) => {
     setToast(message);
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(""), 1800);
-  };
+  }, []);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -124,27 +154,33 @@ export default function App() {
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
   const activeCategoryKind = categoryKinds[activeModule];
-  const effectiveFilters = activeCategoryKind
+  const effectiveFilters = useMemo(() => activeCategoryKind
     ? {
         ...filters,
         kind: [activeCategoryKind],
         audioDirectoryPath: activeCategoryKind === "音频" ? filters.audioDirectoryPath : undefined,
       }
-    : activeModule === "智能视图" ? filters : { ...filters, audioDirectoryPath: undefined };
-  const indexedQueryOptions = {
+    : activeModule === "智能视图" ? filters : { ...filters, audioDirectoryPath: undefined }, [activeCategoryKind, activeModule, filters]);
+  const indexedQueryOptions = useMemo<LoadIndexedAssetsOptions>(() => ({
     query,
     filters: effectiveFilters,
     sort: activeModule === "重复文件" ? "duplicates" : sort,
-    availability: activeModule === "缺失文件" ? "missing" as const : "available" as const,
+    availability: activeModule === "缺失文件" ? "missing" : "available",
     duplicateOnly: activeModule === "重复文件",
-  };
+  }), [activeModule, effectiveFilters, query, sort]);
+  indexedModeRef.current = indexedMode;
+  libraryAssetCountRef.current = libraryAssets.length;
+  indexedQueryOptionsRef.current = indexedQueryOptions;
 
-  const refreshIndexedAssets = async (forceIndexedMode = false) => {
+  const refreshIndexedAssets = async (forceIndexedMode = false, preserveLoadedWindow = false) => {
     const requestId = ++assetRequest.current;
     try {
-      const page = await loadIndexedAssets({ ...indexedQueryOptions, limit: 200 });
+      const targetCount = preserveLoadedWindow && indexedModeRef.current
+        ? Math.max(ASSET_PAGE_SIZE, libraryAssetCountRef.current)
+        : ASSET_PAGE_SIZE;
+      const page = await loadIndexedAssetWindow(indexedQueryOptionsRef.current, targetCount);
       if (requestId !== assetRequest.current) return;
-      if (page.total > 0 || forceIndexedMode || indexedMode) {
+      if (page.total > 0 || forceIndexedMode || indexedModeRef.current) {
         setIndexedMode(true);
         setLibraryAssets(page.items);
         setIndexedTotal(page.total);
@@ -182,7 +218,7 @@ export default function App() {
         });
       }).catch(() => undefined);
       void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1))
-        .then(() => refreshIndexedAssets(true))
+        .then(() => refreshIndexedAssets(true, true))
         .catch(() => undefined);
     }).catch(() => undefined);
     // The first load deliberately uses the initial query state only.
@@ -211,6 +247,14 @@ export default function App() {
     });
     return () => { disposed = true; stop?.(); };
   }, []);
+
+  useEffect(() => {
+    if (!indexedMode) return;
+    // Invalidate an in-flight page from the previous query immediately. The
+    // debounced first-page refresh below will publish the new pagination state.
+    assetRequest.current += 1;
+    setNextOffset(undefined);
+  }, [indexedMode, indexedQueryOptions]);
 
   useEffect(() => {
     if (!indexedMode) return;
@@ -259,18 +303,21 @@ export default function App() {
 
   useEffect(() => {
     if (indexRevision === 0) return;
-    const timer = window.setTimeout(() => void refreshIndexedAssets(true), 240);
+    const timer = window.setTimeout(() => void refreshIndexedAssets(true, true), 360);
     return () => window.clearTimeout(timer);
     // Coalesce the scan writer and thumbnail worker's frequent commit notifications.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [indexRevision]);
 
-  const loadMoreIndexedAssets = async () => {
-    if (!indexedMode || nextOffset === undefined || loadingAssets) return;
+  const loadMoreIndexedAssets = useCallback(async () => {
+    if (!indexedMode || nextOffset === undefined || assetPageLoadActive.current) return;
+    assetPageLoadActive.current = true;
     setLoadingAssets(true);
     const offset = nextOffset;
+    const requestId = assetRequest.current;
     try {
-      const page = await loadIndexedAssets({ ...indexedQueryOptions, offset, limit: 200 });
+      const page = await loadIndexedAssets({ ...indexedQueryOptions, offset, limit: ASSET_PAGE_SIZE });
+      if (requestId !== assetRequest.current) return;
       setLibraryAssets((current) => {
         const existing = new Set(current.map((asset) => asset.id));
         return [...current, ...page.items.filter((asset) => !existing.has(asset.id))];
@@ -278,11 +325,14 @@ export default function App() {
       setIndexedTotal(page.total);
       setNextOffset(page.nextOffset);
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "无法读取更多资源");
+      if (requestId === assetRequest.current) {
+        showToast(error instanceof Error ? error.message : "无法读取更多资源");
+      }
     } finally {
+      assetPageLoadActive.current = false;
       setLoadingAssets(false);
     }
-  };
+  }, [indexedMode, indexedQueryOptions, nextOffset, showToast]);
 
   const filteredAssets = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
@@ -306,6 +356,8 @@ export default function App() {
       if (activeModule === "缺失文件") return false;
       return true;
     });
+
+    if (indexedMode) return result;
 
     return [...result].sort((a, b) => {
       if (sort === "name") return a.name.localeCompare(b.name, "zh-CN");
@@ -442,7 +494,7 @@ export default function App() {
     showToast(`已为 ${assets.length} 个资源${operation === "add" ? "添加" : "移除"}标签`);
   };
 
-  const handleAssetSelect = (asset: (typeof libraryAssets)[number], mode: "replace" | "toggle" | "range") => {
+  const handleAssetSelect = useCallback((asset: (typeof libraryAssets)[number], mode: "replace" | "toggle" | "range") => {
     setSelectedId(asset.id);
     setSelectedIds((current) => {
       if (mode === "replace") {
@@ -463,7 +515,7 @@ export default function App() {
       lastSelectedId.current = asset.id;
       return next;
     });
-  };
+  }, [filteredAssets]);
 
   const handleSaveSmartView = async () => {
     const name = window.prompt("为当前筛选命名", "新智能视图")?.trim();
@@ -553,7 +605,7 @@ export default function App() {
     }
   };
 
-  const handleViewOriginal = async (asset: (typeof libraryAssets)[number]) => {
+  const handleViewOriginal = useCallback(async (asset: (typeof libraryAssets)[number]) => {
     if (asset.kind === "音频" || asset.kind === "视频") {
       setSelectedId(asset.id);
       setDetailOpen(true);
@@ -568,7 +620,7 @@ export default function App() {
       }
       showToast(error instanceof Error ? error.message : "无法调用系统查看器");
     }
-  };
+  }, [showToast]);
 
   return (
     <div className={`app-shell ${activeSection === "工具" ? "tools-active" : ""}`}>
@@ -693,10 +745,10 @@ export default function App() {
             view={view}
             cardWidth={cardWidth}
             onSelect={handleAssetSelect}
-            onOpen={(asset) => void handleViewOriginal(asset)}
+            onOpen={handleViewOriginal}
             hasMore={indexedMode && nextOffset !== undefined}
             loading={loadingAssets}
-            onLoadMore={() => void loadMoreIndexedAssets()}
+            onLoadMore={loadMoreIndexedAssets}
           />
         </main>
 
