@@ -151,6 +151,10 @@ const samples: Asset[] = [
     modifiedAt: "7月10日",
     palette: ["#4e2f77", "#8f5ec7", "#efd7ff"],
     motif: "audio",
+    integratedLufs: -16.8,
+    truePeakDbtp: -1.2,
+    loudnessRangeLu: 7.4,
+    loudnessStatus: "ready",
   },
   {
     id: "asset-011",
@@ -301,6 +305,10 @@ const samples: Asset[] = [
     modifiedAt: "7月5日",
     palette: ["#1b5266", "#35a5bd", "#d9f7ff"],
     motif: "audio",
+    integratedLufs: -11.4,
+    truePeakDbtp: -0.6,
+    loudnessRangeLu: 2.1,
+    loudnessStatus: "ready",
   },
 ];
 

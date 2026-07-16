@@ -26,6 +26,10 @@ export interface Asset {
   height?: number;
   durationMs?: number;
   metadataStatus?: "pending" | "ready" | "unsupported";
+  integratedLufs?: number;
+  truePeakDbtp?: number;
+  loudnessRangeLu?: number;
+  loudnessStatus?: "pending" | "ready" | "silent" | "unsupported";
   availability?: "available" | "missing";
 }
 

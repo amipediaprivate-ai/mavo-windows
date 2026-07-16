@@ -260,7 +260,19 @@ struct IndexedAssetSummary {
     duration_ms: Option<i64>,
     thumbnail_path: Option<String>,
     metadata_status: String,
+    integrated_lufs: Option<f64>,
+    true_peak_dbtp: Option<f64>,
+    loudness_range_lu: Option<f64>,
+    loudness_status: String,
     availability: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct AudioLoudness {
+    integrated_lufs: Option<f64>,
+    true_peak_dbtp: Option<f64>,
+    loudness_range_lu: Option<f64>,
+    threshold_lufs: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -444,6 +456,13 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
         ("content_hash", "TEXT"),
         ("hash_modified_ms", "INTEGER"),
         ("metadata_error", "TEXT"),
+        ("integrated_lufs", "REAL"),
+        ("true_peak_dbtp", "REAL"),
+        ("loudness_range_lu", "REAL"),
+        ("loudness_threshold_lufs", "REAL"),
+        ("loudness_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("loudness_error", "TEXT"),
+        ("loudness_version", "INTEGER NOT NULL DEFAULT 1"),
     ];
     for (name, definition) in additions {
         if !columns.iter().any(|column| column == name) {
@@ -611,6 +630,12 @@ fn flush_batch(
                    hash_modified_ms = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.hash_modified_ms END,
                    metadata_status = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN 'pending' ELSE indexed_assets.metadata_status END,
                    metadata_error = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.metadata_error END,
+                   integrated_lufs = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.integrated_lufs END,
+                   true_peak_dbtp = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.true_peak_dbtp END,
+                   loudness_range_lu = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.loudness_range_lu END,
+                   loudness_threshold_lufs = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.loudness_threshold_lufs END,
+                   loudness_status = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN 'pending' ELSE indexed_assets.loudness_status END,
+                   loudness_error = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.loudness_error END,
                    modified_ms = excluded.modified_ms,
                    scan_root = excluded.scan_root,
                    last_scan_id = excluded.last_scan_id,
@@ -749,7 +774,8 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
     };
     let sql = format!(
         "SELECT rowid, path, name, extension, kind, size_bytes, modified_ms, indexed_at_ms,
-                width, height, duration_ms, thumbnail_path, metadata_status, availability
+                width, height, duration_ms, thumbnail_path, metadata_status,
+                integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_status, availability
          FROM indexed_assets WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
     );
     let mut page_values = values;
@@ -780,7 +806,11 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
                 duration_ms: row.get(10)?,
                 thumbnail_path: row.get(11)?,
                 metadata_status: row.get(12)?,
-                availability: row.get(13)?,
+                integrated_lufs: row.get(13)?,
+                true_peak_dbtp: row.get(14)?,
+                loudness_range_lu: row.get(15)?,
+                loudness_status: row.get(16)?,
+                availability: row.get(17)?,
             })
         })
         .map_err(|error| error.to_string())?
@@ -1263,7 +1293,10 @@ fn relink_asset(
         "UPDATE indexed_assets SET path = ?1, name = ?2, extension = ?3, kind = ?4,
          size_bytes = ?5, modified_ms = ?6, scan_root = ?7, availability = 'available',
          width = NULL, height = NULL, duration_ms = NULL, thumbnail_path = NULL,
-         metadata_status = 'pending', metadata_error = NULL, content_hash = NULL, hash_modified_ms = NULL
+         metadata_status = 'pending', metadata_error = NULL, content_hash = NULL, hash_modified_ms = NULL,
+         integrated_lufs = NULL, true_peak_dbtp = NULL, loudness_range_lu = NULL,
+         loudness_threshold_lufs = NULL, loudness_status = 'pending', loudness_error = NULL,
+         loudness_version = 1
          WHERE rowid = ?8",
         params![path.to_string_lossy().into_owned(), name, extension, asset_kind(&extension), metadata.len() as i64, modified_ms, folder, asset_id],
     ).map_err(|error| error.to_string())?;
@@ -1783,6 +1816,72 @@ fn enrich_media_file(
     Ok((width, height, duration, generated))
 }
 
+fn parse_loudness_metric(value: &serde_json::Value, key: &str) -> Result<Option<f64>, String> {
+    let raw = value
+        .get(key)
+        .and_then(|metric| metric.as_str())
+        .ok_or_else(|| format!("响度分析缺少 {key}"))?;
+    if matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "-inf" | "inf" | "+inf"
+    ) {
+        return Ok(None);
+    }
+    let metric = raw
+        .parse::<f64>()
+        .map_err(|_| format!("响度分析返回了无效的 {key}: {raw}"))?;
+    metric
+        .is_finite()
+        .then_some(Some(metric))
+        .ok_or_else(|| format!("响度分析返回了非有限的 {key}: {raw}"))
+}
+
+fn parse_loudnorm_output(stderr: &[u8]) -> Result<AudioLoudness, String> {
+    let output = String::from_utf8_lossy(stderr);
+    let json_end = output
+        .rfind('}')
+        .ok_or_else(|| "响度分析没有返回 JSON".to_string())?;
+    let json_start = output[..=json_end]
+        .rfind('{')
+        .ok_or_else(|| "响度分析返回的 JSON 不完整".to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&output[json_start..=json_end])
+        .map_err(|error| format!("无法解析响度分析结果：{error}"))?;
+    Ok(AudioLoudness {
+        integrated_lufs: parse_loudness_metric(&value, "input_i")?,
+        true_peak_dbtp: parse_loudness_metric(&value, "input_tp")?,
+        loudness_range_lu: parse_loudness_metric(&value, "input_lra")?,
+        threshold_lufs: parse_loudness_metric(&value, "input_thresh")?,
+    })
+}
+
+fn analyze_audio_loudness(path: &Path, duration_ms: i64) -> Result<AudioLoudness, String> {
+    let mut command = media_command("ffmpeg");
+    command
+        .args(["-hide_banner", "-nostats", "-nostdin", "-v", "info", "-i"])
+        .arg(path)
+        .args([
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-af",
+            "loudnorm=I=-23:LRA=7:TP=-2:print_format=json",
+            "-f",
+            "null",
+            "-",
+        ]);
+    let duration_seconds = duration_ms.max(0) as u64 / 1000;
+    let timeout = Duration::from_secs((60 + duration_seconds / 20).clamp(60, 300));
+    let output = command_output_with_timeout(&mut command, timeout)
+        .map_err(|error| format!("FFmpeg 响度分析失败：{error}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("FFmpeg 响度分析失败：{}", error.trim()));
+    }
+    parse_loudnorm_output(&output.stderr)
+}
+
 fn publish_enrichment_tasks(
     app: &AppHandle,
     manager: &BackgroundTaskManager,
@@ -1819,6 +1918,168 @@ fn publish_enrichment_tasks(
             },
         );
     }
+}
+
+fn publish_loudness_task(
+    app: &AppHandle,
+    manager: &BackgroundTaskManager,
+    scan_id: &str,
+    completed: u64,
+    total: u64,
+    current_item: Option<String>,
+    status: &str,
+    started_at_ms: u64,
+) {
+    publish_background_task(
+        app,
+        manager,
+        BackgroundTask {
+            id: format!("loudness:{scan_id}"),
+            task_type: "loudness".to_string(),
+            title: "分析音频响度".to_string(),
+            status: status.to_string(),
+            completed,
+            total: Some(total),
+            current_item,
+            message: Some("读取综合响度、真峰值和动态范围".to_string()),
+            started_at_ms,
+            updated_at_ms: now_ms(),
+        },
+    );
+}
+
+fn enrich_pending_audio_loudness(
+    connection: &Connection,
+    scan_id: &str,
+    counters: &ScanCounters,
+    started: Instant,
+    on_event: Option<&Channel<ScanEvent>>,
+    app: Option<&AppHandle>,
+    task_manager: Option<&BackgroundTaskManager>,
+) -> Result<(), String> {
+    let audio_files = {
+        let mut statement = connection
+            .prepare(
+                "SELECT path, modified_ms, duration_ms FROM indexed_assets
+                 WHERE availability = 'available' AND kind = '音频' AND loudness_status = 'pending'
+                 ORDER BY modified_ms DESC, path ASC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?.unwrap_or_default(),
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    let total = audio_files.len() as u64;
+    if total == 0 {
+        return Ok(());
+    }
+    let task_started_at_ms = now_ms();
+    if let (Some(app), Some(manager)) = (app, task_manager) {
+        publish_loudness_task(
+            app,
+            manager,
+            scan_id,
+            0,
+            total,
+            None,
+            "running",
+            task_started_at_ms,
+        );
+    }
+
+    for (index, (path, modified_ms, duration_ms)) in audio_files.into_iter().enumerate() {
+        let current_item = Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let analysis = catch_unwind(AssertUnwindSafe(|| {
+            analyze_audio_loudness(Path::new(&path), duration_ms)
+        }))
+        .unwrap_or_else(|payload| Err(format!("响度分析异常：{}", panic_message(payload))));
+        let update = match analysis {
+            Ok(loudness) => {
+                let status = if loudness.integrated_lufs.is_some() {
+                    "ready"
+                } else {
+                    "silent"
+                };
+                connection.execute(
+                    "UPDATE indexed_assets SET integrated_lufs = ?1, true_peak_dbtp = ?2,
+                     loudness_range_lu = ?3, loudness_threshold_lufs = ?4,
+                     loudness_status = ?5, loudness_error = NULL, loudness_version = 1
+                     WHERE path = ?6 AND modified_ms = ?7",
+                    params![
+                        loudness.integrated_lufs,
+                        loudness.true_peak_dbtp,
+                        loudness.loudness_range_lu,
+                        loudness.threshold_lufs,
+                        status,
+                        path,
+                        modified_ms,
+                    ],
+                )
+            }
+            Err(error) => connection.execute(
+                "UPDATE indexed_assets SET loudness_status = 'unsupported', loudness_error = ?1,
+                 loudness_version = 1 WHERE path = ?2 AND modified_ms = ?3",
+                params![error, path, modified_ms],
+            ),
+        };
+        if let Err(error) = update {
+            if let (Some(app), Some(manager)) = (app, task_manager) {
+                publish_loudness_task(
+                    app,
+                    manager,
+                    scan_id,
+                    index as u64,
+                    total,
+                    Some(format!("写入失败：{error}")),
+                    "failed",
+                    task_started_at_ms,
+                );
+            }
+            return Err(error.to_string());
+        }
+
+        let completed = (index + 1) as u64;
+        if index % PREVIEW_REFRESH_INTERVAL == PREVIEW_REFRESH_INTERVAL - 1 {
+            if let Some(channel) = on_event {
+                let _ = channel.send(ScanEvent::new(
+                    "assetsCommitted",
+                    scan_id,
+                    counters,
+                    started,
+                ));
+            }
+        }
+        if completed == 1 || completed % 4 == 0 || completed == total {
+            if let (Some(app), Some(manager)) = (app, task_manager) {
+                publish_loudness_task(
+                    app,
+                    manager,
+                    scan_id,
+                    completed,
+                    total,
+                    current_item,
+                    if completed == total {
+                        "completed"
+                    } else {
+                        "running"
+                    },
+                    task_started_at_ms,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn enrich_pending_images(
@@ -2012,6 +2273,15 @@ fn enrich_pending_images(
             }
         }
     }
+    enrich_pending_audio_loudness(
+        &connection,
+        &scan_id,
+        &counters,
+        started,
+        on_event.as_ref(),
+        app.as_ref(),
+        task_manager.as_ref(),
+    )?;
     if let Some(channel) = on_event {
         let _ = channel.send(ScanEvent::new(
             "assetsCommitted",
@@ -2994,6 +3264,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_loudnorm_json_and_recognizes_silence() {
+        let measured = parse_loudnorm_output(
+            br#"[Parsed_loudnorm_0] {
+                "input_i" : "-16.80",
+                "input_tp" : "-0.82",
+                "input_lra" : "5.20",
+                "input_thresh" : "-27.10"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(measured.integrated_lufs, Some(-16.8));
+        assert_eq!(measured.true_peak_dbtp, Some(-0.82));
+        assert_eq!(measured.loudness_range_lu, Some(5.2));
+        assert_eq!(measured.threshold_lufs, Some(-27.1));
+
+        let silent = parse_loudnorm_output(
+            br#"{
+                "input_i" : "-inf",
+                "input_tp" : "-inf",
+                "input_lra" : "0.00",
+                "input_thresh" : "-70.00"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(silent.integrated_lufs, None);
+        assert_eq!(silent.true_peak_dbtp, None);
+    }
+
+    #[test]
     fn bundled_ffmpeg_analyzes_audio_and_generates_waveform() {
         let media_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
@@ -3014,7 +3313,7 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "sine=frequency=440:duration=0.25",
+                "sine=frequency=440:duration=1",
             ])
             .arg(&audio)
             .status()
@@ -3022,12 +3321,15 @@ mod tests {
         assert!(generated.success());
         let (_, _, duration_ms, thumbnail_path) =
             enrich_media_file(&audio, "音频", &thumbnail).unwrap();
-        assert!(duration_ms >= 200);
+        assert!(duration_ms >= 900);
         assert_eq!(
             thumbnail_path.as_deref(),
             Some(thumbnail.to_string_lossy().as_ref())
         );
         assert!(thumbnail.is_file());
+        let loudness = analyze_audio_loudness(&audio, duration_ms).unwrap();
+        assert!(loudness.integrated_lufs.is_some());
+        assert!(loudness.true_peak_dbtp.is_some());
         fs::remove_dir_all(workspace).unwrap();
     }
 }

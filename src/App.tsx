@@ -387,6 +387,7 @@ export default function App() {
     try {
       await relinkIndexedAsset(asset, selected);
       setIndexRevision((revision) => revision + 1);
+      void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1)).catch(() => undefined);
       showToast("文件已重新定位");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "无法重新定位文件");

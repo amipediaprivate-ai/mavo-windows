@@ -1706,6 +1706,10 @@ select:focus-visible,
   display: none;
 }
 
+.audio-card-loudness {
+  display: none;
+}
+
 .audio-card-play,
 .audio-card-loop {
   width: 24px;
@@ -1807,6 +1811,26 @@ select:focus-visible,
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.audio-list-card .audio-card-loudness {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  min-height: 21px;
+  padding: 0 8px;
+  color: #506383;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 2px 8px rgba(31, 48, 88, 0.08);
+  backdrop-filter: blur(6px);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
 }
 
 .audio-card-volume button,
@@ -2452,6 +2476,64 @@ select:focus-visible,
   background: #fff;
   box-shadow: 0 2px 7px rgba(39, 54, 88, 0.08);
   font-weight: 680;
+}
+
+.audio-source-metrics {
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid #e1e6f0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.audio-source-metrics-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #7d899d;
+  font-size: 9px;
+}
+
+.audio-source-metrics-heading strong {
+  color: #4c6083;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-source-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.audio-source-metrics-grid > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 5px;
+  border-radius: 7px;
+  background: #f2f5fb;
+  text-align: center;
+}
+
+.audio-source-metrics-grid small {
+  overflow: hidden;
+  color: #909bad;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-source-metrics-grid strong {
+  overflow: hidden;
+  color: #465773;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .audio-player-message {

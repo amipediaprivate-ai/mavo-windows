@@ -37,6 +37,37 @@ function VolumeControl({ variant }: { variant: "card" | "detail" }) {
   );
 }
 
+function originalLoudnessLabel(asset: Asset) {
+  if (asset.loudnessStatus === "silent") return "静音";
+  if (asset.loudnessStatus === "unsupported") return "无法分析";
+  if (asset.loudnessStatus !== "ready" || asset.integratedLufs === undefined) return "分析中";
+  return `${asset.integratedLufs.toFixed(1)} LUFS`;
+}
+
+function OriginalLoudness({ asset, variant }: { asset: Asset; variant: "card" | "detail" }) {
+  const label = originalLoudnessLabel(asset);
+  if (variant === "card") {
+    return <span className="audio-card-loudness" title={`原始响度：${label}`}>原始响度 {label}</span>;
+  }
+  const integratedLufs = asset.integratedLufs;
+  const ready = asset.loudnessStatus === "ready" && integratedLufs !== undefined;
+  return (
+    <section className={`audio-source-metrics ${ready ? "ready" : ""}`} aria-label="原始音频参数">
+      <div className="audio-source-metrics-heading">
+        <span>原始音频参数</span>
+        <strong>{label}</strong>
+      </div>
+      {ready && (
+        <div className="audio-source-metrics-grid">
+          <span><small>综合响度</small><strong>{integratedLufs?.toFixed(1)} LUFS</strong></span>
+          <span><small>真峰值</small><strong>{asset.truePeakDbtp !== undefined ? `${asset.truePeakDbtp.toFixed(1)} dBTP` : "—"}</strong></span>
+          <span><small>响度范围</small><strong>{asset.loudnessRangeLu !== undefined ? `${asset.loudnessRangeLu.toFixed(1)} LU` : "—"}</strong></span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function AudioCardPlayer({ asset }: { asset: Asset }) {
   const player = useAudioPlayer();
   const active = player.isActive(asset);
@@ -49,6 +80,7 @@ export function AudioCardPlayer({ asset }: { asset: Asset }) {
   return (
     <div className={`audio-card-player ${active ? "active" : ""}`} onDoubleClick={(event) => event.stopPropagation()}>
       <AudioWaveform asset={asset} variant="card" />
+      <OriginalLoudness asset={asset} variant="card" />
       <div className="audio-card-controls">
         <button
           className="audio-card-play"
@@ -151,6 +183,7 @@ export function AudioDetailPlayer({ asset }: { asset: Asset }) {
           <Repeat1 size={12} /> 循环播放
         </button>
       </div>
+      <OriginalLoudness asset={asset} variant="detail" />
       {!playable && <p className="audio-player-message">{asset.availability === "missing" ? "原始音频文件已缺失" : "该资源没有可播放的本地音频"}</p>}
       {active && player.status === "error" && playable && <p className="audio-player-message error">{player.error}</p>}
     </section>

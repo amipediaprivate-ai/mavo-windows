@@ -16,6 +16,10 @@ export interface IndexedAssetRecord {
   durationMs?: number | null;
   thumbnailPath?: string;
   metadataStatus: "pending" | "ready" | "unsupported";
+  integratedLufs?: number | null;
+  truePeakDbtp?: number | null;
+  loudnessRangeLu?: number | null;
+  loudnessStatus: "pending" | "ready" | "silent" | "unsupported";
   availability: "available" | "missing";
 }
 
@@ -80,7 +84,7 @@ export interface DuplicateScanSummary {
 
 export interface BackgroundTask {
   id: string;
-  taskType: "index" | "analysis" | "thumbnail";
+  taskType: "index" | "analysis" | "thumbnail" | "loudness";
   title: string;
   status: "running" | "completed" | "cancelled" | "failed";
   completed: number;
@@ -163,6 +167,10 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     height: record.height ?? undefined,
     durationMs: record.durationMs ?? undefined,
     metadataStatus: record.metadataStatus,
+    integratedLufs: record.integratedLufs ?? undefined,
+    truePeakDbtp: record.truePeakDbtp ?? undefined,
+    loudnessRangeLu: record.loudnessRangeLu ?? undefined,
+    loudnessStatus: record.loudnessStatus,
     availability: record.availability,
   };
 }

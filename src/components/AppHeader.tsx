@@ -105,6 +105,7 @@ export function AppHeader({
     if (task.status === "completed") return <CheckCircle2 size={15} />;
     if (task.taskType === "index") return <Database size={15} />;
     if (task.taskType === "thumbnail") return <Image size={15} />;
+    if (task.taskType === "loudness") return <Music2 size={15} />;
     return <Activity size={15} />;
   };
 
