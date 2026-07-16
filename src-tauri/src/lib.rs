@@ -1556,27 +1556,31 @@ fn open_asset_original(asset_id: i64, app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn open_asset_folder(asset_id: i64, app: AppHandle) -> Result<(), String> {
     let path = indexed_asset_path(asset_id, &app)?;
-    let folder = path
-        .parent()
-        .ok_or_else(|| "无法确定所属文件夹".to_string())?;
 
     #[cfg(target_os = "windows")]
     windowless_command("explorer.exe")
-        .arg(folder)
+        .arg("/select,")
+        .arg(&path)
         .spawn()
         .map_err(|error| format!("无法打开所属文件夹：{error}"))?;
 
     #[cfg(target_os = "macos")]
     windowless_command("open")
-        .arg(folder)
+        .arg("-R")
+        .arg(&path)
         .spawn()
         .map_err(|error| format!("无法打开所属文件夹：{error}"))?;
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    windowless_command("xdg-open")
-        .arg(folder)
-        .spawn()
-        .map_err(|error| format!("无法打开所属文件夹：{error}"))?;
+    {
+        let folder = path
+            .parent()
+            .ok_or_else(|| "无法确定所属文件夹".to_string())?;
+        windowless_command("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map_err(|error| format!("无法打开所属文件夹：{error}"))?;
+    }
 
     Ok(())
 }
