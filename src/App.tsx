@@ -35,8 +35,10 @@ import {
   createTag,
   setAssetTags,
   mutateAssetTags,
+  renameIndexedAsset,
   relinkIndexedAsset,
   removeIndexedAsset,
+  saveTagGroup,
   saveSmartView,
   scanDuplicateAssets,
   type AssetDirectoryTree,
@@ -479,6 +481,12 @@ export default function App() {
     return id;
   };
 
+  const handleCreateTagGroup = async (name: string) => {
+    const id = await saveTagGroup(name);
+    await refreshTags();
+    return id;
+  };
+
   const handleSetAssetTags = async (asset: (typeof libraryAssets)[number], tagIds: number[]) => {
     await setAssetTags([asset], tagIds);
     await refreshTags();
@@ -584,6 +592,14 @@ export default function App() {
     } catch (error) {
       showToast(error instanceof Error ? error.message : "无法重新定位文件");
     }
+  };
+
+  const handleRename = async (asset: (typeof libraryAssets)[number], newStem: string) => {
+    const renamed = await renameIndexedAsset(asset, newStem);
+    setLibraryAssets((current) => current.map((item) => item.id === asset.id
+      ? { ...item, name: renamed.name, localPath: renamed.path }
+      : item));
+    showToast(`已重命名为「${renamed.name}」`);
   };
 
   const handleRemoveFromIndex = async (asset: (typeof libraryAssets)[number]) => {
@@ -760,10 +776,12 @@ export default function App() {
             onViewOriginal={(asset) => void handleViewOriginal(asset)}
             onOpenFolder={(asset) => void handleOpenFolder(asset)}
             onRelink={(asset) => void handleRelink(asset)}
+            onRename={handleRename}
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}
             tagCatalog={tagCatalog}
             onSetTags={handleSetAssetTags}
             onCreateTag={handleCreateTag}
+            onCreateTagGroup={handleCreateTagGroup}
             onFilterTag={(tagId) => setFilters((current) => ({ ...current, tags: current.tags.includes(tagId) ? current.tags : [...current.tags, tagId] }))}
           />
         )}

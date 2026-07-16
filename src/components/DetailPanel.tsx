@@ -5,10 +5,11 @@ import {
   FolderOpen,
   MoreHorizontal,
   PanelRightClose,
+  PencilLine,
   Sparkles,
   Tag,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import type { TagCatalog, TagInput } from "../lib/indexedAssets";
 import type { Asset } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
@@ -25,10 +26,12 @@ interface DetailPanelProps {
   onViewOriginal: (asset: Asset) => void;
   onOpenFolder: (asset: Asset) => void;
   onRelink: (asset: Asset) => void;
+  onRename: (asset: Asset, newStem: string) => Promise<void>;
   onRemoveFromIndex: (asset: Asset) => void;
   tagCatalog?: TagCatalog;
   onSetTags: (asset: Asset, tagIds: number[]) => Promise<void>;
   onCreateTag: (input: TagInput) => Promise<number>;
+  onCreateTagGroup: (name: string) => Promise<number>;
   onFilterTag: (tagId: number) => void;
 }
 
@@ -41,8 +44,73 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onFilterTag }: DetailPanelProps) {
+function splitFileName(name: string) {
+  const extensionIndex = name.lastIndexOf(".");
+  return extensionIndex > 0 && extensionIndex < name.length - 1
+    ? { stem: name.slice(0, extensionIndex), extension: name.slice(extensionIndex) }
+    : { stem: name, extension: "" };
+}
+
+function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose: () => void; onRename: (asset: Asset, newStem: string) => Promise<void> }) {
+  const current = splitFileName(asset.name);
+  const [name, setName] = useState(current.stem);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !saving) onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, saving]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const nextName = name.trim();
+    if (!nextName || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await onRename(asset, nextName);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="tag-picker-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !saving && onClose()}>
+      <section className="asset-rename-dialog" role="dialog" aria-modal="true" aria-label={`重命名 ${asset.name}`}>
+        <header>
+          <div><PencilLine size={18} /><span><strong>重命名资源</strong><small>将直接修改电脑上的文件名</small></span></div>
+          <button className="icon-button small" disabled={saving} onClick={onClose} aria-label="关闭"><span aria-hidden="true">×</span></button>
+        </header>
+        <form className="asset-rename-form" onSubmit={(event) => void submit(event)}>
+          <label>
+            <span>新文件名</span>
+            <div className="asset-rename-input">
+              <input autoFocus value={name} maxLength={200} disabled={saving} onChange={(event) => setName(event.target.value)} />
+              {current.extension && <strong>{current.extension}</strong>}
+            </div>
+          </label>
+          <p>扩展名会保持不变。不能使用 <code>{'< > : " / \\ | ? *'}</code>，也不能与同一文件夹中的现有文件重名。</p>
+          {error && <p className="asset-rename-error">{error}</p>}
+          <footer>
+            <button type="button" className="secondary-button" disabled={saving} onClick={onClose}>取消</button>
+            <button type="submit" className="primary-button" disabled={saving || !name.trim() || name.trim() === current.stem}>{saving ? "正在重命名…" : "重命名文件"}</button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   return (
     <aside className="detail-panel">
       <div className="detail-heading">
@@ -78,6 +146,9 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
               <h2>{asset.name}</h2>
               <p>{asset.format} · {asset.dimensions} · {asset.weight}</p>
             </div>
+            {asset.id.startsWith("indexed-") && asset.availability !== "missing" && (
+              <button className="icon-button small asset-rename-trigger" onClick={() => setRenameOpen(true)} aria-label="重命名文件" title="重命名电脑上的文件"><PencilLine size={14} /></button>
+            )}
           </div>
 
           <div className="detail-actions">
@@ -148,7 +219,11 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           onClose={() => setTagPickerOpen(false)}
           onSave={(tagIds) => onSetTags(asset, tagIds)}
           onCreate={onCreateTag}
+          onCreateGroup={onCreateTagGroup}
         />
+      )}
+      {asset && renameOpen && (
+        <AssetRenameDialog asset={asset} onClose={() => setRenameOpen(false)} onRename={onRename} />
       )}
     </aside>
   );

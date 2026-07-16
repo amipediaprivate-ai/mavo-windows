@@ -127,6 +127,11 @@ export interface DuplicateScanSummary {
   duplicateFiles: number;
 }
 
+export interface RenameAssetResult {
+  name: string;
+  path: string;
+}
+
 export interface BackgroundTask {
   id: string;
   taskType: "index" | "analysis" | "thumbnail" | "loudness";
@@ -278,6 +283,13 @@ export async function listBackgroundTasks() {
 
 export async function relinkIndexedAsset(asset: Asset, newPath: string) {
   await invoke("relink_asset", { assetId: Number(asset.id.replace("indexed-", "")), newPath });
+}
+
+export async function renameIndexedAsset(asset: Asset, newStem: string) {
+  return invoke<RenameAssetResult>("rename_asset", {
+    assetId: Number(asset.id.replace("indexed-", "")),
+    newStem,
+  });
 }
 
 export async function removeIndexedAsset(asset: Asset) {

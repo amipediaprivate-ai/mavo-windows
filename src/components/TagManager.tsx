@@ -13,6 +13,7 @@ import {
   type TagInput,
 } from "../lib/indexedAssets";
 import type { AssetKind } from "../types";
+import { TagGroupField } from "./TagGroupField";
 
 const assetKinds: AssetKind[] = ["图片", "动图", "视频", "音频", "设计文件", "3D 模型", "字体", "文档"];
 
@@ -84,6 +85,13 @@ export function TagManager({ catalog, onChanged, onAction }: TagManagerProps) {
     } catch (error) {
       onAction(error instanceof Error ? error.message : String(error));
     }
+  };
+
+  const createGroupForForm = async (name: string) => {
+    const id = await saveTagGroup(name);
+    await onChanged();
+    onAction(`已创建分组「${name}」`);
+    return id;
   };
 
   const renameGroup = async () => {
@@ -200,7 +208,7 @@ export function TagManager({ catalog, onChanged, onAction }: TagManagerProps) {
             <header><div><Tag size={18} /><strong>{editingId ? "编辑标签" : "新建标签"}</strong></div><button className="icon-button small" onClick={() => setFormOpen(false)}>×</button></header>
             <div className="tag-create-form">
               <label><span>名称</span><input autoFocus maxLength={40} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-              <label><span>分组</span><select value={form.groupId} onChange={(event) => setForm({ ...form, groupId: Number(event.target.value) })}>{catalog.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+              <TagGroupField groups={catalog.groups} value={form.groupId} onChange={(groupId) => setForm((current) => ({ ...current, groupId }))} onCreate={createGroupForForm} disabled={saving} />
               <label><span>颜色</span><input type="color" value={form.color} onChange={(event) => setForm({ ...form, color: event.target.value })} /></label>
               <label><span>描述</span><textarea rows={3} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
               <fieldset><legend>适用类型（不选表示全部）</legend><div className="tag-scope-grid">{assetKinds.map((kind) => <label key={kind}><input type="checkbox" checked={form.scopes.includes(kind)} onChange={() => setForm({ ...form, scopes: form.scopes.includes(kind) ? form.scopes.filter((item) => item !== kind) : [...form.scopes, kind] })} /> {kind}</label>)}</div></fieldset>

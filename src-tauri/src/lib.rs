@@ -366,6 +366,13 @@ struct AssetPage {
     total: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameAssetResult {
+    name: String,
+    path: String,
+}
+
 fn asset_kind(extension: &str) -> &'static str {
     match extension {
         "gif" | "ase" | "aseprite" => "动图",
@@ -2355,6 +2362,148 @@ fn open_asset_folder(asset_id: i64, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn validated_asset_stem(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("文件名不能为空".to_string());
+    }
+    if value.chars().count() > 200 {
+        return Err("文件名不能超过 200 个字符".to_string());
+    }
+    if value == "." || value == ".." || value.ends_with('.') || value.ends_with(' ') {
+        return Err("文件名不能以空格或句点结尾".to_string());
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() || "<>:\"/\\|?*".contains(character))
+    {
+        return Err("文件名包含 Windows 不允许的字符".to_string());
+    }
+
+    let reserved_base = value
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let numbered_device = reserved_base
+        .strip_prefix("COM")
+        .or_else(|| reserved_base.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        });
+    if matches!(reserved_base.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered_device {
+        return Err("该名称是 Windows 保留名称，请使用其他文件名".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn rename_indexed_asset(
+    connection: &Connection,
+    asset_id: i64,
+    new_stem: &str,
+) -> Result<RenameAssetResult, String> {
+    let new_stem = validated_asset_stem(new_stem)?;
+    let (current_path, availability): (String, String) = connection
+        .query_row(
+            "SELECT path, availability FROM indexed_assets WHERE rowid = ?1",
+            params![asset_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "资源不存在或已从索引移除".to_string())?;
+    if availability != "available" {
+        return Err("文件当前不可用，请先重新定位后再重命名".to_string());
+    }
+
+    let current_path = PathBuf::from(current_path);
+    if !current_path.is_file() {
+        return Err("原始文件不存在或无法访问".to_string());
+    }
+    let parent = current_path
+        .parent()
+        .ok_or_else(|| "无法确定文件所在目录".to_string())?;
+    let extension = current_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "无法识别原文件扩展名".to_string())?;
+    let new_name = format!("{new_stem}.{extension}");
+    if new_name.encode_utf16().count() > 255 {
+        return Err("包含扩展名的完整文件名不能超过 255 个字符".to_string());
+    }
+    let destination = parent.join(&new_name);
+    if destination == current_path {
+        return Ok(RenameAssetResult {
+            name: new_name,
+            path: destination.to_string_lossy().into_owned(),
+        });
+    }
+
+    let same_windows_path =
+        normalize_directory_key(&destination) == normalize_directory_key(&current_path);
+    if !same_windows_path && destination.exists() {
+        return Err(format!("同一文件夹中已存在「{new_name}」"));
+    }
+    fs::rename(&current_path, &destination).map_err(|error| match error.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            "无法重命名：文件正在使用中或当前用户没有修改权限".to_string()
+        }
+        std::io::ErrorKind::AlreadyExists => format!("同一文件夹中已存在「{new_name}」"),
+        _ => format!("无法重命名磁盘文件：{error}"),
+    })?;
+
+    let update = connection.execute(
+        "UPDATE indexed_assets SET path = ?1, name = ?2 WHERE rowid = ?3 AND path = ?4",
+        params![
+            destination.to_string_lossy().into_owned(),
+            new_name,
+            asset_id,
+            current_path.to_string_lossy().into_owned(),
+        ],
+    );
+    match update {
+        Ok(1) => Ok(RenameAssetResult {
+            name: destination
+                .file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path: destination.to_string_lossy().into_owned(),
+        }),
+        Ok(_) => {
+            let rollback = fs::rename(&destination, &current_path);
+            if let Err(error) = rollback {
+                Err(format!("索引记录已变化，且文件名回滚失败：{error}"))
+            } else {
+                Err("索引记录已变化，文件名已自动恢复，请刷新后重试".to_string())
+            }
+        }
+        Err(error) => {
+            let rollback = fs::rename(&destination, &current_path);
+            if let Err(rollback_error) = rollback {
+                Err(format!(
+                    "索引更新失败（{error}），且文件名回滚失败：{rollback_error}"
+                ))
+            } else {
+                Err(format!("索引更新失败，文件名已自动恢复：{error}"))
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn rename_asset(
+    asset_id: i64,
+    new_stem: String,
+    app: AppHandle,
+) -> Result<RenameAssetResult, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let renamed = rename_indexed_asset(&connection, asset_id, &new_stem)?;
+    let _ = app.emit("asset-index-changed", ());
+    Ok(renamed)
+}
+
 #[tauri::command]
 fn relink_asset(
     asset_id: i64,
@@ -3951,6 +4100,7 @@ pub fn run() {
             read_asset_preview,
             open_asset_original,
             open_asset_folder,
+            rename_asset,
             relink_asset,
             remove_asset_from_index,
             scan_duplicates,
@@ -4140,6 +4290,73 @@ mod tests {
 
     fn test_workspace(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("mavo-{name}-{}", create_scan_id()))
+    }
+
+    #[test]
+    fn asset_file_name_validation_rejects_windows_invalid_names() {
+        assert_eq!(validated_asset_stem("  新名称  ").unwrap(), "新名称");
+        for name in [
+            "",
+            ".",
+            "..",
+            "bad/name",
+            "bad:name",
+            "trailing.",
+            "CON",
+            "com1.log",
+            "LPT9",
+        ] {
+            assert!(
+                validated_asset_stem(name).is_err(),
+                "{name} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_asset_rename_moves_the_file_and_updates_the_database() {
+        let workspace = test_workspace("asset-rename");
+        let source = workspace.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let old_path = source.join("old-name.WAV");
+        fs::write(&old_path, b"audio placeholder").unwrap();
+
+        let database = workspace.join("index.sqlite3");
+        let connection = setup_database(&database).unwrap();
+        connection
+            .execute(
+                "INSERT INTO indexed_assets
+                 (path, name, extension, size_bytes, modified_ms, scan_root, last_scan_id,
+                  indexed_at_ms, kind, availability, directory_path, directory_key)
+                 VALUES (?1, 'old-name.WAV', 'wav', 17, 1, ?2, 'scan', 1, '音频',
+                         'available', ?2, ?3)",
+                params![
+                    old_path.to_string_lossy().into_owned(),
+                    source.to_string_lossy().into_owned(),
+                    normalize_directory_key(&source),
+                ],
+            )
+            .unwrap();
+        let asset_id = connection.last_insert_rowid();
+
+        let renamed = rename_indexed_asset(&connection, asset_id, "battle-theme").unwrap();
+        let new_path = source.join("battle-theme.WAV");
+        assert_eq!(renamed.name, "battle-theme.WAV");
+        assert_eq!(PathBuf::from(&renamed.path), new_path);
+        assert!(!old_path.exists());
+        assert!(new_path.is_file());
+        let indexed: (String, String) = connection
+            .query_row(
+                "SELECT path, name FROM indexed_assets WHERE rowid = ?1",
+                params![asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(PathBuf::from(indexed.0), new_path);
+        assert_eq!(indexed.1, "battle-theme.WAV");
+
+        drop(connection);
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

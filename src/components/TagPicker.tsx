@@ -2,6 +2,7 @@ import { Check, Plus, Search, Tag, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { TagCatalog, TagInput } from "../lib/indexedAssets";
 import type { Asset, AssetKind } from "../types";
+import { TagGroupField } from "./TagGroupField";
 
 const assetKinds: AssetKind[] = ["图片", "动图", "视频", "音频", "设计文件", "3D 模型", "字体", "文档"];
 
@@ -11,9 +12,10 @@ interface TagPickerProps {
   onClose: () => void;
   onSave: (tagIds: number[]) => Promise<void>;
   onCreate: (input: TagInput) => Promise<number>;
+  onCreateGroup: (name: string) => Promise<number>;
 }
 
-export function TagPicker({ asset, catalog, onClose, onSave, onCreate }: TagPickerProps) {
+export function TagPicker({ asset, catalog, onClose, onSave, onCreate, onCreateGroup }: TagPickerProps) {
   const [selected, setSelected] = useState<number[]>(asset.tagItems?.map((tag) => tag.id) ?? []);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
@@ -114,13 +116,13 @@ export function TagPicker({ asset, catalog, onClose, onSave, onCreate }: TagPick
         ) : (
           <div className="tag-create-form">
             <label><span>标签名称</span><input autoFocus value={name} maxLength={40} onChange={(event) => setName(event.target.value)} /></label>
-            <label><span>所属分组</span><select value={groupId} onChange={(event) => setGroupId(Number(event.target.value))}>{catalog.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+            <TagGroupField groups={catalog.groups} value={groupId} onChange={setGroupId} onCreate={onCreateGroup} disabled={saving} />
             <label><span>标签颜色</span><input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label>
             <fieldset>
               <legend>适用类型（不选表示全部）</legend>
               <div className="tag-scope-grid">{assetKinds.map((kind) => <label key={kind}><input type="checkbox" checked={scopes.includes(kind)} onChange={() => setScopes((current) => current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind])} /> {kind}</label>)}</div>
             </fieldset>
-            <div className="tag-form-actions"><button className="secondary-button" onClick={() => setCreating(false)}>返回</button><button className="primary-button" disabled={saving || !name.trim()} onClick={() => void create()}>创建并选择</button></div>
+            <div className="tag-form-actions"><button className="secondary-button" onClick={() => setCreating(false)}>返回</button><button className="primary-button" disabled={saving || !name.trim() || !groupId} onClick={() => void create()}>创建并选择</button></div>
           </div>
         )}
         {error && <p className="tag-picker-error">{error}</p>}
