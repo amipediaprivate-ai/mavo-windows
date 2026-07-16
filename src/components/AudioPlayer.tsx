@@ -1,4 +1,4 @@
-import { LoaderCircle, Pause, Play, Repeat1, RotateCcw, RotateCw } from "lucide-react";
+import { LoaderCircle, Pause, Play, Repeat1, RotateCcw, RotateCw, Volume2, VolumeX } from "lucide-react";
 import type { Asset } from "../types";
 import { canPlayAudio } from "../lib/desktopAssets";
 import { useAudioPlayer } from "../audio/AudioPlayerContext";
@@ -8,6 +8,33 @@ function PlayIcon({ loading, playing, size }: { loading: boolean; playing: boole
   if (loading) return <LoaderCircle className="audio-spinner" size={size} />;
   if (playing) return <Pause size={size} fill="currentColor" />;
   return <Play size={size} fill="currentColor" />;
+}
+
+function VolumeControl({ variant }: { variant: "card" | "detail" }) {
+  const player = useAudioPlayer();
+  const percentage = Math.round(player.volume * 100);
+  return (
+    <div className={`audio-${variant}-volume`} onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        onClick={player.toggleMute}
+        aria-label={player.volume === 0 ? "恢复音量" : "静音"}
+        title={player.volume === 0 ? "恢复音量" : "静音"}
+      >
+        {player.volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
+      </button>
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        value={player.volume}
+        onChange={(event) => player.setVolume(Number(event.target.value))}
+        aria-label="音量"
+      />
+      <output>{percentage}%</output>
+    </div>
+  );
 }
 
 export function AudioCardPlayer({ asset }: { asset: Asset }) {
@@ -50,6 +77,7 @@ export function AudioCardPlayer({ asset }: { asset: Asset }) {
         >
           <Repeat1 size={13} />
         </button>
+        <VolumeControl variant="card" />
       </div>
       {active && player.status === "error" && <span className="audio-card-error" title={player.error}>播放失败</span>}
     </div>
@@ -104,6 +132,7 @@ export function AudioDetailPlayer({ asset }: { asset: Asset }) {
           <small>5</small>
         </button>
       </div>
+      <VolumeControl variant="detail" />
       <div className="audio-playback-mode" aria-label="播放模式">
         <button
           type="button"

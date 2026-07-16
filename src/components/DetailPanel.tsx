@@ -94,7 +94,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             <h3><CircleDot size={14} /> 基础信息</h3>
             <DetailRow label="文件类型" value={asset.kind} />
             <DetailRow label="文件格式" value={asset.format} />
-            <DetailRow label="尺寸 / 时长" value={asset.dimensions} />
+            <DetailRow label={asset.kind === "音频" ? "时长" : "尺寸 / 时长"} value={asset.dimensions} />
             <DetailRow label="文件大小" value={asset.weight} />
             <DetailRow label="导入时间" value={asset.importedAt} />
           </section>

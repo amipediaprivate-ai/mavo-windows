@@ -11,9 +11,9 @@ export interface IndexedAssetRecord {
   modifiedMs: number;
   indexedAtMs: number;
   folder: string;
-  width?: number;
-  height?: number;
-  durationMs?: number;
+  width?: number | null;
+  height?: number | null;
+  durationMs?: number | null;
   thumbnailPath?: string;
   metadataStatus: "pending" | "ready" | "unsupported";
   availability: "available" | "missing";
@@ -123,10 +123,19 @@ function motifFor(kind: AssetKind): Asset["motif"] {
 
 export function formatIndexedAssetDimensions(record: IndexedAssetRecord) {
   const { width, height, durationMs } = record;
-  if (width !== undefined && height !== undefined) {
-    return `${width} × ${height}${durationMs !== undefined ? ` · ${formatDuration(durationMs)}` : ""}`;
+  const hasDuration = typeof durationMs === "number" && Number.isFinite(durationMs);
+  if (record.kind === "音频") {
+    if (hasDuration) return formatDuration(durationMs);
+    if (record.metadataStatus === "unsupported") return "无法分析";
+    if (record.metadataStatus === "ready") return "无可用时长信息";
+    return "时长待分析";
   }
-  if (durationMs !== undefined) return formatDuration(durationMs);
+  const hasDimensions = typeof width === "number" && Number.isFinite(width)
+    && typeof height === "number" && Number.isFinite(height);
+  if (hasDimensions) {
+    return `${width} × ${height}${hasDuration ? ` · ${formatDuration(durationMs)}` : ""}`;
+  }
+  if (hasDuration) return formatDuration(durationMs);
   if (record.metadataStatus === "unsupported") return "无法分析";
   if (record.metadataStatus === "ready") return "无可用媒体信息";
   return "尺寸待分析";
@@ -150,9 +159,9 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     localPath: record.path,
     thumbnailUrl: record.thumbnailPath ? convertFileSrc(record.thumbnailPath) : undefined,
     sizeBytes: record.sizeBytes,
-    width: record.width,
-    height: record.height,
-    durationMs: record.durationMs,
+    width: record.width ?? undefined,
+    height: record.height ?? undefined,
+    durationMs: record.durationMs ?? undefined,
     metadataStatus: record.metadataStatus,
     availability: record.availability,
   };

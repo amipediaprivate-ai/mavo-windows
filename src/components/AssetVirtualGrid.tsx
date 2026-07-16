@@ -23,6 +23,12 @@ interface AssetVirtualGridProps {
 const GRID_ASPECT_RATIO = 1.48;
 const GRID_CARD_BODY_HEIGHT = 78;
 const MASONRY_CARD_BODY_HEIGHT = 58;
+const LIST_ROW_HEIGHT = 72;
+const AUDIO_LIST_ROW_HEIGHT = 192;
+
+function listRowHeight(asset: Asset) {
+  return asset.kind === "音频" ? AUDIO_LIST_ROW_HEIGHT : LIST_ROW_HEIGHT;
+}
 
 function masonryCardHeight(asset: Asset, columnWidth: number) {
   const contentWidth = Math.max(1, columnWidth - 2);
@@ -45,7 +51,7 @@ function AssetCard({
   const showsCardMetadata = view !== "list";
   return (
     <article
-      className={`asset-card ${selected ? "selected" : ""} ${view === "list" ? "list-card" : ""} ${view === "masonry" ? "masonry-card" : ""}`}
+      className={`asset-card ${selected ? "selected" : ""} ${view === "list" ? "list-card" : ""} ${view === "list" && asset.kind === "音频" ? "audio-list-card" : ""} ${view === "masonry" ? "masonry-card" : ""}`}
       tabIndex={0}
       onClick={onSelect}
       onDoubleClick={onOpen}
@@ -121,7 +127,7 @@ export function AssetVirtualGrid({
   const gap = 12;
   const columns = view === "list" ? 1 : Math.max(1, Math.floor((containerWidth + gap) / (cardWidth + gap)));
   const columnWidth = view === "list" ? containerWidth : (containerWidth - gap * (columns - 1)) / columns;
-  const rowHeight = view === "list" ? 72 : Math.round(columnWidth / GRID_ASPECT_RATIO + GRID_CARD_BODY_HEIGHT + gap);
+  const rowHeight = view === "list" ? LIST_ROW_HEIGHT : Math.round(columnWidth / GRID_ASPECT_RATIO + GRID_CARD_BODY_HEIGHT + gap);
   const rowCount = Math.ceil(assets.length / columns);
   const masonry = view === "masonry";
   const virtualCount = masonry ? assets.length : rowCount;
@@ -129,7 +135,11 @@ export function AssetVirtualGrid({
   const virtualizer = useVirtualizer({
     count: virtualCount,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => masonry ? masonryCardHeight(assets[index], columnWidth) : rowHeight,
+    estimateSize: (index) => masonry
+      ? masonryCardHeight(assets[index], columnWidth)
+      : view === "list"
+        ? listRowHeight(assets[index])
+        : rowHeight,
     getItemKey: (index) => masonry ? assets[index]?.id ?? index : `row-${index}`,
     lanes: masonry ? columns : 1,
     laneAssignmentMode: "estimate",
@@ -189,7 +199,7 @@ export function AssetVirtualGrid({
                 className={`virtual-row ${view === "list" ? "list-row" : ""}`}
                 key={virtualRow.key}
                 style={{
-                  height: rowHeight - gap,
+                  height: virtualRow.size - gap,
                   gridTemplateColumns: gridTemplate,
                   transform: `translateY(${virtualRow.start}px)`,
                 }}

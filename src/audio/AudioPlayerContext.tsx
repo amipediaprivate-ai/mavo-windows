@@ -21,12 +21,15 @@ interface AudioPlayerValue {
   currentTime: number;
   duration: number;
   mode: AudioPlaybackMode;
+  volume: number;
   error: string;
   isActive: (asset: Asset) => boolean;
   toggle: (asset: Asset) => void;
   seekAndPlay: (asset: Asset, time: number) => void;
   skip: (seconds: number) => void;
   setMode: (mode: AudioPlaybackMode) => void;
+  setVolume: (volume: number) => void;
+  toggleMute: () => void;
 }
 
 interface PendingPlayback {
@@ -42,6 +45,17 @@ function savedPlaybackMode(): AudioPlaybackMode {
     return window.localStorage.getItem("mavo-audio-playback-mode") === "loop" ? "loop" : "once";
   } catch {
     return "once";
+  }
+}
+
+function savedVolume() {
+  try {
+    const saved = window.localStorage.getItem("mavo-audio-volume");
+    if (saved === null) return 1;
+    const value = Number(saved);
+    return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1;
+  } catch {
+    return 1;
   }
 }
 
@@ -71,6 +85,8 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [mode, setPlaybackMode] = useState<AudioPlaybackMode>(savedPlaybackMode);
+  const [volume, setVolumeState] = useState(savedVolume);
+  const lastAudibleVolumeRef = useRef(volume > 0 ? volume : 1);
   const [error, setError] = useState("");
 
   const stopTicker = useCallback(() => {
@@ -98,6 +114,10 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
   }, [stopTicker]);
 
   useEffect(() => () => stopTicker(), [stopTicker]);
+
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume;
+  }, [volume]);
 
   useEffect(() => {
     const pauseForOtherMedia = (event: Event) => {
@@ -187,19 +207,38 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const setVolume = useCallback((nextVolume: number) => {
+    const normalized = Math.min(Math.max(Number.isFinite(nextVolume) ? nextVolume : 1, 0), 1);
+    if (normalized > 0) lastAudibleVolumeRef.current = normalized;
+    if (audioRef.current) audioRef.current.volume = normalized;
+    setVolumeState(normalized);
+    try {
+      window.localStorage.setItem("mavo-audio-volume", String(normalized));
+    } catch {
+      // Playback still works if persistent storage is unavailable.
+    }
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setVolume(volume > 0 ? 0 : lastAudibleVolumeRef.current);
+  }, [setVolume, volume]);
+
   const value = useMemo<AudioPlayerValue>(() => ({
     activeAsset,
     status,
     currentTime,
     duration,
     mode,
+    volume,
     error,
     isActive: (asset) => activeAsset?.id === asset.id,
     toggle,
     seekAndPlay,
     skip,
     setMode,
-  }), [activeAsset, status, currentTime, duration, mode, error, toggle, seekAndPlay, skip, setMode]);
+    setVolume,
+    toggleMute,
+  }), [activeAsset, status, currentTime, duration, mode, volume, error, toggle, seekAndPlay, skip, setMode, setVolume, toggleMute]);
 
   return (
     <AudioPlayerContext.Provider value={value}>
