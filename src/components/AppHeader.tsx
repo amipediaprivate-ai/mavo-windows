@@ -54,7 +54,7 @@ const categoryNav = [
   { label: "视频", icon: Video },
 ];
 
-const managementViews = ["智能视图", "重复文件", "缺失文件"];
+const managementViews = ["智能视图", "标签管理", "重复文件", "缺失文件"];
 
 export function AppHeader({
   activeSection,

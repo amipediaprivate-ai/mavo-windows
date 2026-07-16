@@ -1,8 +1,9 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Asset, AssetKind, Filters } from "../types";
+import type { Asset, AssetKind, AssetTag, Filters } from "../types";
 
 export interface IndexedAssetRecord {
   id: number;
+  assetUid: string;
   path: string;
   name: string;
   format: string;
@@ -21,6 +22,7 @@ export interface IndexedAssetRecord {
   loudnessRangeLu?: number | null;
   loudnessStatus: "pending" | "ready" | "silent" | "unsupported";
   availability: "available" | "missing";
+  tags: AssetTag[];
 }
 
 export interface IndexedAssetPage {
@@ -55,6 +57,35 @@ export interface AssetQuerySpec {
   minDurationMs?: number;
   maxDurationMs?: number;
   audioDirectoryPath?: string;
+  tagIds?: number[];
+}
+
+export interface TagGroup {
+  id: number;
+  name: string;
+  sortOrder: number;
+  tagCount: number;
+}
+
+export interface TagDefinition extends AssetTag {
+  description: string;
+  scopes: AssetKind[];
+  usageCount: number;
+  archived: boolean;
+  updatedAtMs: number;
+}
+
+export interface TagCatalog {
+  groups: TagGroup[];
+  tags: TagDefinition[];
+}
+
+export interface TagInput {
+  name: string;
+  groupId: number;
+  color: string;
+  description?: string;
+  scopes: AssetKind[];
 }
 
 export interface FacetOption {
@@ -168,7 +199,9 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     dimensions: formatIndexedAssetDimensions(record),
     weight: formatBytes(record.sizeBytes),
     folder: record.folder,
-    tags: [],
+    tags: record.tags.map((tag) => tag.name),
+    tagItems: record.tags,
+    assetUid: record.assetUid,
     source: "本地导入",
     importedAt: formatDate(record.indexedAtMs),
     modifiedAt: formatDate(record.modifiedMs),
@@ -206,6 +239,7 @@ export function buildAssetQuery(options: LoadIndexedAssetsOptions = {}): AssetQu
     minDurationMs: options.filters?.minDurationMs,
     maxDurationMs: options.filters?.maxDurationMs,
     audioDirectoryPath: options.filters?.audioDirectoryPath,
+    tagIds: options.filters?.tags.length ? options.filters.tags : undefined,
   };
 }
 
@@ -255,4 +289,48 @@ export async function enrichPendingPreviews(onAssetsCommitted: () => void) {
     if (event.eventType === "assetsCommitted") onAssetsCommitted();
   });
   await invoke("enrich_pending_previews", { onEvent });
+}
+
+export async function loadTagCatalog(includeArchived = false) {
+  return invoke<TagCatalog>("get_tag_catalog", { includeArchived });
+}
+
+export async function saveTagGroup(name: string, groupId?: number) {
+  return invoke<number>("save_tag_group", { name, groupId });
+}
+
+export async function deleteTagGroup(groupId: number) {
+  await invoke("delete_tag_group", { groupId });
+}
+
+export async function createTag(input: TagInput) {
+  return invoke<number>("create_tag", { input });
+}
+
+export async function updateTag(tagId: number, input: TagInput) {
+  await invoke("update_tag", { tagId, input });
+}
+
+export async function setTagArchived(tagId: number, archived: boolean) {
+  await invoke("set_tag_archived", { tagId, archived });
+}
+
+export async function deleteTag(tagId: number) {
+  await invoke("delete_tag", { tagId });
+}
+
+export async function mergeTags(sourceTagId: number, targetTagId: number) {
+  await invoke("merge_tags", { sourceTagId, targetTagId });
+}
+
+function indexedAssetIds(assets: Asset[]) {
+  return assets.map((asset) => Number(asset.id.replace("indexed-", ""))).filter(Number.isFinite);
+}
+
+export async function setAssetTags(assets: Asset[], tagIds: number[]) {
+  await invoke("set_asset_tags", { assetIds: indexedAssetIds(assets), tagIds });
+}
+
+export async function mutateAssetTags(assets: Asset[], tagIds: number[], operation: "add" | "remove") {
+  await invoke("mutate_asset_tags", { assetIds: indexedAssetIds(assets), tagIds, operation });
 }

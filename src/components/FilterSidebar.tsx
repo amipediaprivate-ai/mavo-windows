@@ -8,7 +8,7 @@ import {
   Video,
   type LucideIcon,
 } from "lucide-react";
-import type { AssetDirectoryTree, AssetFacets, FacetOption } from "../lib/indexedAssets";
+import type { AssetDirectoryTree, AssetFacets, FacetOption, TagDefinition } from "../lib/indexedAssets";
 import type { Filters } from "../types";
 import { AudioDirectoryTree } from "./AudioDirectoryTree";
 
@@ -20,6 +20,7 @@ interface FilterSidebarProps {
   facets?: AssetFacets;
   audioDirectoryTree?: AssetDirectoryTree;
   audioDirectoryTreeLoading?: boolean;
+  tags?: TagDefinition[];
   onChange: (filters: Filters) => void;
   onReset: () => void;
 }
@@ -112,7 +113,27 @@ function toggleValue(values: string[], value: string) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
-export function FilterSidebar({ activeModule, filters, facets, audioDirectoryTree, audioDirectoryTreeLoading, onChange, onReset }: FilterSidebarProps) {
+function TagFilterGroup({ tags, selected, onToggle }: { tags: TagDefinition[]; selected: number[]; onToggle: (id: number) => void }) {
+  return (
+    <section className="filter-group">
+      <div className="filter-title"><span>标签</span><ChevronDown size={14} /></div>
+      <div className="check-list tag-filter-list">
+        {tags.length === 0 && <span className="filter-empty">暂无可用标签</span>}
+        {tags.map((tag) => (
+          <label className="check-row" key={tag.id} title={`${tag.groupName} · ${tag.name}`}>
+            <input type="checkbox" checked={selected.includes(tag.id)} onChange={() => onToggle(tag.id)} />
+            <span className="custom-check" aria-hidden="true" />
+            <i style={{ background: tag.color }} />
+            <span>{tag.name}</span>
+            <span className="check-count">{tag.usageCount.toLocaleString("zh-CN")}</span>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function FilterSidebar({ activeModule, filters, facets, audioDirectoryTree, audioDirectoryTreeLoading, tags = [], onChange, onReset }: FilterSidebarProps) {
   const mode: FilterMode = activeModule in filterContexts ? activeModule as FilterMode : "全部";
   const context = filterContexts[mode];
   const ContextIcon = context.icon;
@@ -163,6 +184,12 @@ export function FilterSidebar({ activeModule, filters, facets, audioDirectoryTre
         selected={filters.format}
         onToggle={(value) => updateList("format", value)}
         options={formatOptions}
+      />
+
+      <TagFilterGroup
+        tags={tags.filter((tag) => tag.scopes.length === 0 || mode === "全部" || tag.scopes.includes(mode))}
+        selected={filters.tags}
+        onToggle={(id) => onChange({ ...filters, tags: filters.tags.includes(id) ? filters.tags.filter((tagId) => tagId !== id) : [...filters.tags, id] })}
       />
 
       {hasDimensions && (

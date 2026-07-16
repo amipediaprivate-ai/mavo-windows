@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Clock3, FolderOpen } from "lucide-react";
 import type { Asset, AssetView } from "../types";
@@ -11,9 +11,10 @@ import { VideoCardPlayer } from "./VideoPlayer";
 interface AssetVirtualGridProps {
   assets: Asset[];
   selectedId?: string;
+  selectedIds?: Set<string>;
   view: AssetView;
   cardWidth: number;
-  onSelect: (asset: Asset) => void;
+  onSelect: (asset: Asset, mode: "replace" | "toggle" | "range") => void;
   onOpen: (asset: Asset) => void;
   hasMore?: boolean;
   loading?: boolean;
@@ -45,7 +46,7 @@ function AssetCard({
   asset: Asset;
   selected: boolean;
   view: AssetView;
-  onSelect: () => void;
+  onSelect: (event: MouseEvent<HTMLElement>) => void;
   onOpen: () => void;
 }) {
   const showsCardMetadata = view !== "list";
@@ -56,9 +57,17 @@ function AssetCard({
       onClick={onSelect}
       onDoubleClick={onOpen}
       onKeyDown={(event) => {
-        if (event.key === "Enter") onSelect();
+        if (event.key === "Enter") onSelect(event as unknown as MouseEvent<HTMLElement>);
       }}
     >
+      <button
+        className={`asset-select-check ${selected ? "checked" : ""}`}
+        aria-label={selected ? "取消选择" : "选择资源"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect(event);
+        }}
+      >{selected ? "✓" : ""}</button>
       <div
         className={`thumbnail-wrap ${asset.kind === "音频" ? "audio-thumbnail-wrap" : ""}`}
         style={view === "masonry" ? { aspectRatio: assetAspectRatio(asset) } : undefined}
@@ -103,6 +112,7 @@ function AssetCard({
 export function AssetVirtualGrid({
   assets,
   selectedId,
+  selectedIds = new Set<string>(),
   view,
   cardWidth,
   onSelect,
@@ -184,9 +194,9 @@ export function AssetVirtualGrid({
               >
                 <AssetCard
                   asset={asset}
-                  selected={selectedId === asset.id}
+                  selected={selectedIds.has(asset.id) || selectedId === asset.id}
                   view={view}
-                  onSelect={() => onSelect(asset)}
+                  onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
                   onOpen={() => onOpen(asset)}
                 />
               </div>
@@ -208,9 +218,9 @@ export function AssetVirtualGrid({
                   <AssetCard
                     key={asset.id}
                     asset={asset}
-                    selected={selectedId === asset.id}
+                    selected={selectedIds.has(asset.id) || selectedId === asset.id}
                     view={view}
-                    onSelect={() => onSelect(asset)}
+                    onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
                     onOpen={() => onOpen(asset)}
                   />
                 ))}

@@ -16,10 +16,12 @@ import {
 import { AppHeader } from "./components/AppHeader";
 import { AssetVirtualGrid } from "./components/AssetVirtualGrid";
 import { AssetPreviewDialog } from "./components/AssetPreviewDialog";
+import { BatchTagToolbar } from "./components/BatchTagToolbar";
 import { DetailPanel } from "./components/DetailPanel";
 import { FilterSidebar } from "./components/FilterSidebar";
 import { ScanDialog } from "./components/ScanDialog";
 import { ToolsWorkspace } from "./components/ToolsWorkspace";
+import { TagManager } from "./components/TagManager";
 import { assets as initialAssets } from "./data/assets";
 import {
   deleteSmartView,
@@ -29,6 +31,10 @@ import {
   loadAssetDirectoryTree,
   loadAssetFacets,
   loadIndexedAssets,
+  loadTagCatalog,
+  createTag,
+  setAssetTags,
+  mutateAssetTags,
   relinkIndexedAsset,
   removeIndexedAsset,
   saveSmartView,
@@ -37,6 +43,8 @@ import {
   type AssetFacets,
   type BackgroundTask,
   type SmartView,
+  type TagCatalog,
+  type TagInput,
 } from "./lib/indexedAssets";
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
 import type { AssetKind, AssetView, Filters, ScanScope } from "./types";
@@ -49,8 +57,8 @@ const emptyFilters: Filters = {
   tags: [],
 };
 
-type ListFilterKey = "source" | "kind" | "format" | "folder" | "tags";
-type FilterChipKey = ListFilterKey | "audioDirectoryPath" | "query";
+type ListFilterKey = "source" | "kind" | "format" | "folder";
+type FilterChipKey = ListFilterKey | "tags" | "audioDirectoryPath" | "query";
 
 function directoryLabel(path: string) {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -76,6 +84,7 @@ export default function App() {
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [detailOpen, setDetailOpen] = useState(true);
   const [selectedId, setSelectedId] = useState(initialAssets[0]?.id);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState("");
   const [scanScope, setScanScope] = useState<ScanScope | null>(null);
   const [indexedMode, setIndexedMode] = useState(false);
@@ -90,8 +99,10 @@ export default function App() {
   const [smartViews, setSmartViews] = useState<SmartView[]>([]);
   const [activeSmartViewId, setActiveSmartViewId] = useState<number>();
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
+  const [tagCatalog, setTagCatalog] = useState<TagCatalog>({ groups: [], tags: [] });
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
+  const lastSelectedId = useRef<string | undefined>(undefined);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -147,6 +158,7 @@ export default function App() {
   useEffect(() => {
     void refreshIndexedAssets(false);
     void listSmartViews().then(setSmartViews).catch(() => undefined);
+    void loadTagCatalog(true).then(setTagCatalog).catch(() => undefined);
     let disposed = false;
     let stop: (() => void) | undefined;
     void listen<BackgroundTask>("background-task-progress", ({ payload }) => {
@@ -188,11 +200,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen("tags-changed", () => {
+      void loadTagCatalog(true).then((catalog) => {
+        if (!disposed) setTagCatalog(catalog);
+      }).catch(() => undefined);
+    }).then((unlisten) => {
+      if (disposed) unlisten(); else stop = unlisten;
+    });
+    return () => { disposed = true; stop?.(); };
+  }, []);
+
+  useEffect(() => {
     if (!indexedMode) return;
     const timer = window.setTimeout(() => void refreshIndexedAssets(true), 180);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, filters.kind, filters.format, filters.folder, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort]);
+  }, [activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort]);
 
   useEffect(() => {
     if (!indexedMode) return;
@@ -202,7 +227,7 @@ export default function App() {
     }, 220);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, filters.kind, filters.format, filters.folder, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
+  }, [activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
 
   useEffect(() => {
     if (!indexedMode || activeModule !== "音频") {
@@ -264,7 +289,6 @@ export default function App() {
     const result = libraryAssets.filter((asset) => {
       if (indexedMode) {
         if (filters.source.length && !filters.source.includes(asset.source)) return false;
-        if (filters.tags.length && !filters.tags.some((tag) => asset.tags.includes(tag))) return false;
         return true;
       }
       if (normalizedQuery) {
@@ -275,7 +299,7 @@ export default function App() {
       if (filters.kind.length && !filters.kind.includes(asset.kind)) return false;
       if (filters.format.length && !filters.format.includes(asset.format)) return false;
       if (filters.folder.length && !filters.folder.includes(asset.folder)) return false;
-      if (filters.tags.length && !filters.tags.some((tag) => asset.tags.includes(tag))) return false;
+      if (filters.tags.length && !filters.tags.some((tagId) => asset.tagItems?.some((tag) => tag.id === tagId))) return false;
       if (activeCategoryKind && asset.kind !== activeCategoryKind) return false;
       if (activeModule === "最近使用" && asset.id > "asset-010") return false;
       if (activeModule === "重复文件") return false;
@@ -321,8 +345,12 @@ export default function App() {
 
   const filterChips = useMemo(() => {
     const chips: { key: FilterChipKey; value: string; label: string; title?: string }[] = [];
-    (["source", "kind", "format", "folder", "tags"] as ListFilterKey[]).forEach((key) => {
+    (["source", "kind", "format", "folder"] as ListFilterKey[]).forEach((key) => {
       filters[key].forEach((value) => chips.push({ key, value, label: value }));
+    });
+    filters.tags.forEach((tagId) => {
+      const tag = tagCatalog.tags.find((item) => item.id === tagId);
+      chips.push({ key: "tags", value: String(tagId), label: tag ? `标签：${tag.name}` : `标签 #${tagId}` });
     });
     if (filters.audioDirectoryPath) {
       chips.push({
@@ -334,13 +362,15 @@ export default function App() {
     }
     if (query.trim()) chips.push({ key: "query", value: query, label: `搜索：${query}` });
     return chips;
-  }, [filters, query]);
+  }, [filters, query, tagCatalog.tags]);
 
   const clearChip = (key: FilterChipKey, value: string) => {
     if (key === "query") {
       setQuery("");
     } else if (key === "audioDirectoryPath") {
       setFilters((current) => ({ ...current, audioDirectoryPath: undefined }));
+    } else if (key === "tags") {
+      setFilters((current) => ({ ...current, tags: current.tags.filter((item) => item !== Number(value)) }));
     } else {
       setFilters((current) => ({ ...current, [key]: current[key].filter((item) => item !== value) }));
     }
@@ -355,6 +385,7 @@ export default function App() {
 
   const handleModuleChange = async (module: string) => {
     setActiveModule(module);
+    setSelectedIds(new Set());
     if (module === "全部" || categoryKinds[module]) {
       setFilters((current) => ({
         ...current,
@@ -385,6 +416,54 @@ export default function App() {
   };
 
   const refreshSmartViews = () => listSmartViews().then(setSmartViews).catch(() => undefined);
+  const refreshTags = async () => {
+    const catalog = await loadTagCatalog(true);
+    setTagCatalog(catalog);
+  };
+
+  const handleCreateTag = async (input: TagInput) => {
+    const id = await createTag(input);
+    await refreshTags();
+    return id;
+  };
+
+  const handleSetAssetTags = async (asset: (typeof libraryAssets)[number], tagIds: number[]) => {
+    await setAssetTags([asset], tagIds);
+    await refreshTags();
+    setIndexRevision((revision) => revision + 1);
+    showToast("标签已保存");
+  };
+
+  const handleBatchTags = async (tagIds: number[], operation: "add" | "remove") => {
+    const assets = libraryAssets.filter((asset) => selectedIds.has(asset.id));
+    await mutateAssetTags(assets, tagIds, operation);
+    await refreshTags();
+    setIndexRevision((revision) => revision + 1);
+    showToast(`已为 ${assets.length} 个资源${operation === "add" ? "添加" : "移除"}标签`);
+  };
+
+  const handleAssetSelect = (asset: (typeof libraryAssets)[number], mode: "replace" | "toggle" | "range") => {
+    setSelectedId(asset.id);
+    setSelectedIds((current) => {
+      if (mode === "replace") {
+        lastSelectedId.current = asset.id;
+        return new Set([asset.id]);
+      }
+      if (mode === "range" && lastSelectedId.current) {
+        const from = filteredAssets.findIndex((item) => item.id === lastSelectedId.current);
+        const to = filteredAssets.findIndex((item) => item.id === asset.id);
+        if (from >= 0 && to >= 0) {
+          const next = new Set(current);
+          filteredAssets.slice(Math.min(from, to), Math.max(from, to) + 1).forEach((item) => next.add(item.id));
+          return next;
+        }
+      }
+      const next = new Set(current);
+      if (next.has(asset.id)) next.delete(asset.id); else next.add(asset.id);
+      lastSelectedId.current = asset.id;
+      return next;
+    });
+  };
 
   const handleSaveSmartView = async () => {
     const name = window.prompt("为当前筛选命名", "新智能视图")?.trim();
@@ -416,6 +495,7 @@ export default function App() {
       minDurationMs: smartView.query.minDurationMs,
       maxDurationMs: smartView.query.maxDurationMs,
       audioDirectoryPath: smartView.query.audioDirectoryPath,
+      tags: smartView.query.tagIds ?? [],
     });
   };
 
@@ -512,6 +592,12 @@ export default function App() {
 
       {activeSection === "工具" ? (
         <ToolsWorkspace query={toolQuery} onAction={showToast} />
+      ) : activeModule === "标签管理" ? (
+        <TagManager
+          catalog={tagCatalog}
+          onChanged={async () => { await refreshTags(); setIndexRevision((revision) => revision + 1); }}
+          onAction={showToast}
+        />
       ) : <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>
         {filtersOpen && (
           <FilterSidebar
@@ -520,6 +606,7 @@ export default function App() {
             facets={facets}
             audioDirectoryTree={audioDirectoryTree}
             audioDirectoryTreeLoading={audioDirectoryTreeLoading}
+            tags={tagCatalog.tags.filter((tag) => !tag.archived)}
             onChange={handleFiltersChange}
             onReset={() => setFilters(emptyFilters)}
           />
@@ -590,12 +677,22 @@ export default function App() {
             </div>
           )}
 
+          {selectedIds.size > 1 && (
+            <BatchTagToolbar
+              assets={libraryAssets.filter((asset) => selectedIds.has(asset.id))}
+              catalog={tagCatalog}
+              onClear={() => setSelectedIds(new Set())}
+              onApply={handleBatchTags}
+            />
+          )}
+
           <AssetVirtualGrid
             assets={filteredAssets}
             selectedId={selectedId}
+            selectedIds={selectedIds}
             view={view}
             cardWidth={cardWidth}
-            onSelect={(asset) => setSelectedId(asset.id)}
+            onSelect={handleAssetSelect}
             onOpen={(asset) => void handleViewOriginal(asset)}
             hasMore={indexedMode && nextOffset !== undefined}
             loading={loadingAssets}
@@ -612,6 +709,10 @@ export default function App() {
             onOpenFolder={(asset) => void handleOpenFolder(asset)}
             onRelink={(asset) => void handleRelink(asset)}
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}
+            tagCatalog={tagCatalog}
+            onSetTags={handleSetAssetTags}
+            onCreateTag={handleCreateTag}
+            onFilterTag={(tagId) => setFilters((current) => ({ ...current, tags: current.tags.includes(tagId) ? current.tags : [...current.tags, tagId] }))}
           />
         )}
       </section>}

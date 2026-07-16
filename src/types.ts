@@ -4,6 +4,14 @@ export type AssetView = "grid" | "masonry" | "list";
 export type ScanScope = "computer" | "folder";
 export type ScanSpeed = "slow" | "fast";
 
+export interface AssetTag {
+  id: number;
+  name: string;
+  color: string;
+  groupId: number;
+  groupName: string;
+}
+
 export interface Asset {
   id: string;
   name: string;
@@ -13,6 +21,8 @@ export interface Asset {
   weight: string;
   folder: string;
   tags: string[];
+  tagItems?: AssetTag[];
+  assetUid?: string;
   source: AssetSource;
   importedAt: string;
   modifiedAt: string;
@@ -38,7 +48,7 @@ export interface Filters {
   kind: string[];
   format: string[];
   folder: string[];
-  tags: string[];
+  tags: number[];
   minWidth?: number;
   maxWidth?: number;
   orientation?: "square" | "landscape" | "portrait" | "wide";

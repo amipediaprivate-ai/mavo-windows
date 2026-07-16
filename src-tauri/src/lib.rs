@@ -210,6 +210,7 @@ struct AssetQuery {
     min_duration_ms: Option<u64>,
     max_duration_ms: Option<u64>,
     audio_directory_path: Option<String>,
+    tag_ids: Option<Vec<i64>>,
 }
 
 #[derive(Serialize)]
@@ -227,6 +228,57 @@ struct AssetFacets {
     folders: Vec<FacetOption>,
     available_count: u64,
     missing_count: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetTagSummary {
+    id: i64,
+    name: String,
+    color: String,
+    group_id: i64,
+    group_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TagGroupSummary {
+    id: i64,
+    name: String,
+    sort_order: i64,
+    tag_count: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TagSummary {
+    id: i64,
+    name: String,
+    color: String,
+    description: String,
+    group_id: i64,
+    group_name: String,
+    scopes: Vec<String>,
+    usage_count: u64,
+    archived: bool,
+    updated_at_ms: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TagCatalog {
+    groups: Vec<TagGroupSummary>,
+    tags: Vec<TagSummary>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TagInput {
+    name: String,
+    group_id: i64,
+    color: String,
+    description: Option<String>,
+    scopes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -276,6 +328,7 @@ struct DuplicateScanSummary {
 #[serde(rename_all = "camelCase")]
 struct IndexedAssetSummary {
     id: i64,
+    asset_uid: String,
     path: String,
     name: String,
     format: String,
@@ -294,6 +347,7 @@ struct IndexedAssetSummary {
     loudness_range_lu: Option<f64>,
     loudness_status: String,
     availability: String,
+    tags: Vec<AssetTagSummary>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -485,12 +539,149 @@ fn setup_database(path: &Path) -> Result<Connection, String> {
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS tag_groups (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+               sort_order INTEGER NOT NULL DEFAULT 0,
+               created_at_ms INTEGER NOT NULL,
+               updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS tags (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               group_id INTEGER NOT NULL,
+               name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+               color TEXT NOT NULL DEFAULT '#64748b',
+               description TEXT NOT NULL DEFAULT '',
+               archived INTEGER NOT NULL DEFAULT 0,
+               created_at_ms INTEGER NOT NULL,
+               updated_at_ms INTEGER NOT NULL,
+               FOREIGN KEY(group_id) REFERENCES tag_groups(id)
+             );
+             CREATE TABLE IF NOT EXISTS tag_kind_scopes (
+               tag_id INTEGER NOT NULL,
+               asset_kind TEXT NOT NULL,
+               PRIMARY KEY(tag_id, asset_kind),
+               FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS asset_tags (
+               asset_uid TEXT NOT NULL,
+               tag_id INTEGER NOT NULL,
+               created_at_ms INTEGER NOT NULL,
+               PRIMARY KEY(asset_uid, tag_id),
+               FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
+             );
              CREATE INDEX IF NOT EXISTS indexed_assets_extension_idx ON indexed_assets(extension);
-             CREATE INDEX IF NOT EXISTS indexed_assets_scan_root_idx ON indexed_assets(scan_root);",
+             CREATE INDEX IF NOT EXISTS indexed_assets_scan_root_idx ON indexed_assets(scan_root);
+             CREATE INDEX IF NOT EXISTS asset_tags_tag_idx ON asset_tags(tag_id, asset_uid);
+             CREATE INDEX IF NOT EXISTS tags_group_idx ON tags(group_id, archived);",
         )
         .map_err(|error| error.to_string())?;
     migrate_indexed_assets(&connection)?;
+    setup_default_tags(&connection)?;
     Ok(connection)
+}
+
+fn setup_default_tags(connection: &Connection) -> Result<(), String> {
+    let initialized: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'default_tags_v1')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if initialized {
+        return Ok(());
+    }
+    let timestamp = now_ms() as i64;
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
+    let seeded = (|| -> Result<(), String> {
+        for (id, name, sort_order) in [
+            (1_i64, "内容", 10_i64),
+            (2, "风格", 20),
+            (3, "用途", 30),
+            (4, "状态", 40),
+            (5, "音频分类", 50),
+            (6, "播放属性", 60),
+        ] {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO tag_groups (id, name, sort_order, created_at_ms, updated_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?4)",
+                    params![id, name, sort_order, timestamp],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        for (id, group_id, name, color, description) in [
+            (1_i64, 1_i64, "人物", "#f97316", "包含人物主体"),
+            (2, 1, "场景", "#22c55e", "环境或场景素材"),
+            (3, 2, "像素风", "#8b5cf6", "像素艺术风格"),
+            (4, 2, "扁平", "#06b6d4", "扁平化视觉风格"),
+            (5, 3, "界面素材", "#3b82f6", "用于界面设计"),
+            (6, 4, "待审核", "#f59e0b", "尚待确认的资源"),
+            (7, 4, "已确认", "#10b981", "已经确认可用"),
+            (8, 5, "背景音乐", "#6366f1", "音乐或配乐"),
+            (9, 5, "音效", "#ec4899", "短音效素材"),
+            (10, 5, "环境音", "#14b8a6", "环境氛围声音"),
+            (11, 5, "对白", "#a855f7", "语音或对白"),
+            (12, 6, "可循环", "#0ea5e9", "可连续循环播放"),
+            (13, 6, "单次播放", "#64748b", "适合单次触发"),
+        ] {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO tags
+                     (id, group_id, name, color, description, created_at_ms, updated_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                    params![id, group_id, name, color, description, timestamp],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        for (tag_id, kind) in [
+            (1_i64, "图片"),
+            (1, "动图"),
+            (1, "视频"),
+            (2, "图片"),
+            (2, "动图"),
+            (2, "视频"),
+            (3, "图片"),
+            (3, "动图"),
+            (4, "图片"),
+            (4, "动图"),
+            (5, "图片"),
+            (5, "动图"),
+            (8, "音频"),
+            (9, "音频"),
+            (10, "音频"),
+            (11, "音频"),
+            (12, "音频"),
+            (12, "视频"),
+            (13, "音频"),
+            (13, "视频"),
+        ] {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO tag_kind_scopes (tag_id, asset_kind) VALUES (?1, ?2)",
+                    params![tag_id, kind],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        connection
+            .execute(
+                "INSERT INTO app_metadata (key, value) VALUES ('default_tags_v1', '1')",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = seeded {
+        let _ = connection.execute_batch("ROLLBACK");
+        return Err(error);
+    }
+    connection
+        .execute_batch("COMMIT")
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
@@ -506,6 +697,7 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
 
     let kind_was_missing = !columns.iter().any(|column| column == "kind");
     let additions = [
+        ("asset_uid", "TEXT NOT NULL DEFAULT ''"),
         ("kind", "TEXT NOT NULL DEFAULT '设计文件'"),
         ("width", "INTEGER"),
         ("height", "INTEGER"),
@@ -535,6 +727,22 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
         }
     }
+    connection
+        .execute(
+            "UPDATE indexed_assets SET asset_uid = lower(hex(randomblob(16))) WHERE asset_uid = ''",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS indexed_assets_asset_uid_idx
+               ON indexed_assets(asset_uid) WHERE asset_uid <> '';
+             CREATE TRIGGER IF NOT EXISTS indexed_assets_asset_uid_insert
+             AFTER INSERT ON indexed_assets WHEN new.asset_uid = '' BEGIN
+               UPDATE indexed_assets SET asset_uid = lower(hex(randomblob(16))) WHERE rowid = new.rowid;
+             END;",
+        )
+        .map_err(|error| error.to_string())?;
     let kinds_normalized: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'asset_kinds_normalized_v2')",
@@ -801,13 +1009,25 @@ fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
     {
         if search.chars().count() >= 3 {
             where_parts.push(
-                "rowid IN (SELECT rowid FROM indexed_assets_fts WHERE indexed_assets_fts MATCH ?)"
+                "(rowid IN (SELECT rowid FROM indexed_assets_fts WHERE indexed_assets_fts MATCH ?)
+                 OR EXISTS (
+                   SELECT 1 FROM asset_tags search_at JOIN tags search_tag ON search_tag.id = search_at.tag_id
+                   WHERE search_at.asset_uid = indexed_assets.asset_uid AND search_tag.name LIKE ?
+                 ))"
                     .to_string(),
             );
             values.push(Value::Text(format!("\"{}\"", search.replace('"', "\"\""))));
+            values.push(Value::Text(format!("%{search}%")));
         } else {
-            where_parts.push("(name LIKE ? OR path LIKE ?)".to_string());
+            where_parts.push(
+                "(name LIKE ? OR path LIKE ? OR EXISTS (
+                   SELECT 1 FROM asset_tags search_at JOIN tags search_tag ON search_tag.id = search_at.tag_id
+                   WHERE search_at.asset_uid = indexed_assets.asset_uid AND search_tag.name LIKE ?
+                 ))"
+                .to_string(),
+            );
             let pattern = format!("%{search}%");
+            values.push(Value::Text(pattern.clone()));
             values.push(Value::Text(pattern.clone()));
             values.push(Value::Text(pattern));
         }
@@ -847,6 +1067,20 @@ fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
         where_parts.push("(directory_key = ? OR directory_key LIKE ? ESCAPE '!')".to_string());
         values.push(Value::Text(key.clone()));
         values.push(Value::Text(directory_subtree_pattern(&key)));
+    }
+    if let Some(tag_ids) = query.tag_ids.as_ref().filter(|items| !items.is_empty()) {
+        let placeholders = vec!["?"; tag_ids.len()].join(",");
+        where_parts.push(format!(
+            "(SELECT COUNT(DISTINCT assigned_tag.group_id)
+               FROM asset_tags assigned
+               JOIN tags assigned_tag ON assigned_tag.id = assigned.tag_id
+              WHERE assigned.asset_uid = indexed_assets.asset_uid
+                AND assigned.tag_id IN ({placeholders}))
+             = (SELECT COUNT(DISTINCT selected_tag.group_id)
+                  FROM tags selected_tag WHERE selected_tag.id IN ({placeholders}))"
+        ));
+        values.extend(tag_ids.iter().copied().map(Value::Integer));
+        values.extend(tag_ids.iter().copied().map(Value::Integer));
     }
     if let Some(min_width) = query.min_width {
         where_parts.push("width >= ?".to_string());
@@ -909,7 +1143,7 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
         _ => "modified_ms DESC, path ASC",
     };
     let sql = format!(
-        "SELECT rowid, path, name, extension, kind, size_bytes, modified_ms, indexed_at_ms,
+        "SELECT rowid, asset_uid, path, name, extension, kind, size_bytes, modified_ms, indexed_at_ms,
                 width, height, duration_ms, thumbnail_path, metadata_status,
                 integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_status, availability
          FROM indexed_assets WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
@@ -922,36 +1156,80 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(params_from_iter(page_values.iter()), |row| {
-            let path: String = row.get(1)?;
+            let path: String = row.get(2)?;
             let folder = Path::new(&path)
                 .parent()
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_default();
             Ok(IndexedAssetSummary {
                 id: row.get(0)?,
+                asset_uid: row.get(1)?,
                 path,
-                name: row.get(2)?,
-                format: row.get::<_, String>(3)?.to_ascii_uppercase(),
-                kind: row.get(4)?,
-                size_bytes: row.get(5)?,
-                modified_ms: row.get(6)?,
-                indexed_at_ms: row.get(7)?,
+                name: row.get(3)?,
+                format: row.get::<_, String>(4)?.to_ascii_uppercase(),
+                kind: row.get(5)?,
+                size_bytes: row.get(6)?,
+                modified_ms: row.get(7)?,
+                indexed_at_ms: row.get(8)?,
                 folder,
-                width: row.get(8)?,
-                height: row.get(9)?,
-                duration_ms: row.get(10)?,
-                thumbnail_path: row.get(11)?,
-                metadata_status: row.get(12)?,
-                integrated_lufs: row.get(13)?,
-                true_peak_dbtp: row.get(14)?,
-                loudness_range_lu: row.get(15)?,
-                loudness_status: row.get(16)?,
-                availability: row.get(17)?,
+                width: row.get(9)?,
+                height: row.get(10)?,
+                duration_ms: row.get(11)?,
+                thumbnail_path: row.get(12)?,
+                metadata_status: row.get(13)?,
+                integrated_lufs: row.get(14)?,
+                true_peak_dbtp: row.get(15)?,
+                loudness_range_lu: row.get(16)?,
+                loudness_status: row.get(17)?,
+                availability: row.get(18)?,
+                tags: Vec::new(),
             })
         })
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
+    let mut rows = rows;
+    if !rows.is_empty() {
+        let placeholders = vec!["?"; rows.len()].join(",");
+        let sql = format!(
+            "SELECT at.asset_uid, t.id, t.name, t.color, g.id, g.name
+               FROM asset_tags at
+               JOIN tags t ON t.id = at.tag_id
+               JOIN tag_groups g ON g.id = t.group_id
+              WHERE at.asset_uid IN ({placeholders}) AND t.archived = 0
+              ORDER BY g.sort_order, t.name COLLATE NOCASE"
+        );
+        let uids = rows
+            .iter()
+            .map(|asset| Value::Text(asset.asset_uid.clone()))
+            .collect::<Vec<_>>();
+        let mut tag_statement = connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        let tag_rows = tag_statement
+            .query_map(params_from_iter(uids.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    AssetTagSummary {
+                        id: row.get(1)?,
+                        name: row.get(2)?,
+                        color: row.get(3)?,
+                        group_id: row.get(4)?,
+                        group_name: row.get(5)?,
+                    },
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let mut tags_by_uid: HashMap<String, Vec<AssetTagSummary>> = HashMap::new();
+        for (uid, tag) in tag_rows {
+            tags_by_uid.entry(uid).or_default().push(tag);
+        }
+        for asset in &mut rows {
+            asset.tags = tags_by_uid.remove(&asset.asset_uid).unwrap_or_default();
+        }
+    }
     let consumed = offset.saturating_add(rows.len() as u32);
     Ok(AssetPage {
         items: rows,
@@ -1228,6 +1506,498 @@ fn get_asset_directory_tree(
         rows
     };
     Ok(build_directory_tree(&directories, &direct_counts))
+}
+
+fn validated_tag_input(input: TagInput) -> Result<TagInput, String> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 40 {
+        return Err("标签名称应为 1 至 40 个字符".to_string());
+    }
+    let color = input.color.trim().to_ascii_lowercase();
+    if color.len() != 7
+        || !color.starts_with('#')
+        || !color[1..].chars().all(|value| value.is_ascii_hexdigit())
+    {
+        return Err("标签颜色必须是 #RRGGBB 格式".to_string());
+    }
+    let allowed_kinds = [
+        "图片",
+        "动图",
+        "视频",
+        "音频",
+        "设计文件",
+        "3D 模型",
+        "字体",
+        "文档",
+    ];
+    let mut scopes = input
+        .scopes
+        .into_iter()
+        .filter(|scope| allowed_kinds.contains(&scope.as_str()))
+        .collect::<Vec<_>>();
+    scopes.sort();
+    scopes.dedup();
+    Ok(TagInput {
+        name,
+        group_id: input.group_id,
+        color,
+        description: Some(input.description.unwrap_or_default().trim().to_string()),
+        scopes,
+    })
+}
+
+fn replace_tag_scopes(
+    connection: &Connection,
+    tag_id: i64,
+    scopes: &[String],
+) -> Result<(), String> {
+    connection
+        .execute(
+            "DELETE FROM tag_kind_scopes WHERE tag_id = ?1",
+            params![tag_id],
+        )
+        .map_err(|error| error.to_string())?;
+    for scope in scopes {
+        connection
+            .execute(
+                "INSERT INTO tag_kind_scopes (tag_id, asset_kind) VALUES (?1, ?2)",
+                params![tag_id, scope],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_tag_catalog(include_archived: Option<bool>, app: AppHandle) -> Result<TagCatalog, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let groups = {
+        let mut statement = connection
+            .prepare(
+                "SELECT g.id, g.name, g.sort_order, COUNT(t.id)
+                   FROM tag_groups g LEFT JOIN tags t ON t.group_id = g.id AND t.archived = 0
+                  GROUP BY g.id ORDER BY g.sort_order, g.name COLLATE NOCASE",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(TagGroupSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    sort_order: row.get(2)?,
+                    tag_count: row.get::<_, i64>(3)? as u64,
+                })
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    let where_archived = if include_archived.unwrap_or(false) {
+        ""
+    } else {
+        "WHERE t.archived = 0"
+    };
+    let sql = format!(
+        "SELECT t.id, t.name, t.color, t.description, t.group_id, g.name,
+                t.archived, t.updated_at_ms, COUNT(DISTINCT at.asset_uid)
+           FROM tags t
+           JOIN tag_groups g ON g.id = t.group_id
+           LEFT JOIN asset_tags at ON at.tag_id = t.id
+           {where_archived}
+          GROUP BY t.id ORDER BY g.sort_order, t.name COLLATE NOCASE"
+    );
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
+    let mut tags = statement
+        .query_map([], |row| {
+            Ok(TagSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                description: row.get(3)?,
+                group_id: row.get(4)?,
+                group_name: row.get(5)?,
+                archived: row.get::<_, i64>(6)? != 0,
+                updated_at_ms: row.get(7)?,
+                usage_count: row.get::<_, i64>(8)? as u64,
+                scopes: Vec::new(),
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut scope_statement = connection
+        .prepare("SELECT asset_kind FROM tag_kind_scopes WHERE tag_id = ?1 ORDER BY asset_kind")
+        .map_err(|error| error.to_string())?;
+    for tag in &mut tags {
+        tag.scopes = scope_statement
+            .query_map(params![tag.id], |row| row.get(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(TagCatalog { groups, tags })
+}
+
+#[tauri::command]
+fn save_tag_group(group_id: Option<i64>, name: String, app: AppHandle) -> Result<i64, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 24 {
+        return Err("分组名称应为 1 至 24 个字符".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let timestamp = now_ms() as i64;
+    if let Some(id) = group_id {
+        connection
+            .execute(
+                "UPDATE tag_groups SET name = ?1, updated_at_ms = ?2 WHERE id = ?3",
+                params![name, timestamp, id],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(id)
+    } else {
+        let next_order: i64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), 0) + 10 FROM tag_groups",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO tag_groups (name, sort_order, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?3)",
+                params![name, next_order, timestamp],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(connection.last_insert_rowid())
+    }
+}
+
+#[tauri::command]
+fn delete_tag_group(group_id: i64, app: AppHandle) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let tag_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM tags WHERE group_id = ?1",
+            params![group_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if tag_count > 0 {
+        return Err("请先移动或删除该分组中的标签".to_string());
+    }
+    connection
+        .execute("DELETE FROM tag_groups WHERE id = ?1", params![group_id])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn create_tag(input: TagInput, app: AppHandle) -> Result<i64, String> {
+    let input = validated_tag_input(input)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let timestamp = now_ms() as i64;
+    transaction
+        .execute(
+            "INSERT INTO tags (group_id, name, color, description, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params![
+                input.group_id,
+                input.name,
+                input.color,
+                input.description.unwrap_or_default(),
+                timestamp
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    let tag_id = transaction.last_insert_rowid();
+    replace_tag_scopes(&transaction, tag_id, &input.scopes)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    let _ = app.emit("tags-changed", tag_id);
+    Ok(tag_id)
+}
+
+#[tauri::command]
+fn update_tag(tag_id: i64, input: TagInput, app: AppHandle) -> Result<(), String> {
+    let input = validated_tag_input(input)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    if !input.scopes.is_empty() {
+        let placeholders = vec!["?"; input.scopes.len()].join(",");
+        let sql = format!(
+            "SELECT COUNT(*) FROM asset_tags at JOIN indexed_assets ia ON ia.asset_uid = at.asset_uid
+              WHERE at.tag_id = ? AND ia.kind NOT IN ({placeholders})"
+        );
+        let mut values = vec![Value::Integer(tag_id)];
+        values.extend(input.scopes.iter().cloned().map(Value::Text));
+        let incompatible: i64 = connection
+            .query_row(&sql, params_from_iter(values.iter()), |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        if incompatible > 0 {
+            return Err(format!(
+                "有 {incompatible} 个已标记文件不在新的适用类型内，请先移除或迁移标签"
+            ));
+        }
+    }
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "UPDATE tags SET group_id = ?1, name = ?2, color = ?3, description = ?4,
+             updated_at_ms = ?5 WHERE id = ?6",
+            params![
+                input.group_id,
+                input.name,
+                input.color,
+                input.description.unwrap_or_default(),
+                now_ms() as i64,
+                tag_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    replace_tag_scopes(&transaction, tag_id, &input.scopes)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    let _ = app.emit("tags-changed", tag_id);
+    let _ = app.emit("asset-index-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn set_tag_archived(tag_id: i64, archived: bool, app: AppHandle) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    connection
+        .execute(
+            "UPDATE tags SET archived = ?1, updated_at_ms = ?2 WHERE id = ?3",
+            params![i64::from(archived), now_ms() as i64, tag_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let _ = app.emit("tags-changed", tag_id);
+    let _ = app.emit("asset-index-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_tag(tag_id: i64, app: AppHandle) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM asset_tags WHERE tag_id = ?1", params![tag_id])
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM tag_kind_scopes WHERE tag_id = ?1",
+            params![tag_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM tags WHERE id = ?1", params![tag_id])
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    let _ = app.emit("tags-changed", tag_id);
+    let _ = app.emit("asset-index-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn merge_tags(source_tag_id: i64, target_tag_id: i64, app: AppHandle) -> Result<(), String> {
+    if source_tag_id == target_tag_id {
+        return Err("不能将标签合并到自身".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO asset_tags (asset_uid, tag_id, created_at_ms)
+             SELECT asset_uid, ?1, created_at_ms FROM asset_tags WHERE tag_id = ?2",
+            params![target_tag_id, source_tag_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM asset_tags WHERE tag_id = ?1",
+            params![source_tag_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM tag_kind_scopes WHERE tag_id = ?1",
+            params![source_tag_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM tags WHERE id = ?1", params![source_tag_id])
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    let _ = app.emit("tags-changed", target_tag_id);
+    let _ = app.emit("asset-index-changed", ());
+    Ok(())
+}
+
+fn validate_tag_assignment(
+    connection: &Connection,
+    asset_ids: &[i64],
+    tag_ids: &[i64],
+) -> Result<Vec<(String, String)>, String> {
+    let mut assets = Vec::new();
+    let mut statement = connection
+        .prepare("SELECT asset_uid, kind FROM indexed_assets WHERE rowid = ?1")
+        .map_err(|error| error.to_string())?;
+    for asset_id in asset_ids {
+        let asset = statement
+            .query_row(params![asset_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|_| format!("资源 {asset_id} 不存在"))?;
+        assets.push(asset);
+    }
+    for tag_id in tag_ids {
+        let archived: i64 = connection
+            .query_row(
+                "SELECT archived FROM tags WHERE id = ?1",
+                params![tag_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| format!("标签 {tag_id} 不存在"))?;
+        if archived != 0 {
+            return Err("不能分配已归档标签".to_string());
+        }
+        let scopes = {
+            let mut scope_statement = connection
+                .prepare("SELECT asset_kind FROM tag_kind_scopes WHERE tag_id = ?1")
+                .map_err(|error| error.to_string())?;
+            let rows = scope_statement
+                .query_map(params![tag_id], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<HashSet<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            rows
+        };
+        if !scopes.is_empty() && assets.iter().any(|(_, kind)| !scopes.contains(kind)) {
+            return Err("所选标签不适用于部分文件类型".to_string());
+        }
+    }
+    Ok(assets)
+}
+
+#[tauri::command]
+fn set_asset_tags(asset_ids: Vec<i64>, tag_ids: Vec<i64>, app: AppHandle) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let assets = validate_tag_assignment(&connection, &asset_ids, &tag_ids)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    for (asset_uid, _) in assets {
+        transaction
+            .execute(
+                "DELETE FROM asset_tags WHERE asset_uid = ?1",
+                params![asset_uid],
+            )
+            .map_err(|error| error.to_string())?;
+        for tag_id in &tag_ids {
+            transaction
+                .execute(
+                    "INSERT INTO asset_tags (asset_uid, tag_id, created_at_ms) VALUES (?1, ?2, ?3)",
+                    params![asset_uid, tag_id, now_ms() as i64],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    let _ = app.emit("tags-changed", ());
+    let _ = app.emit("asset-index-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn mutate_asset_tags(
+    asset_ids: Vec<i64>,
+    tag_ids: Vec<i64>,
+    operation: String,
+    app: AppHandle,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let assets = if operation == "add" {
+        validate_tag_assignment(&connection, &asset_ids, &tag_ids)?
+    } else {
+        validate_tag_assignment(&connection, &asset_ids, &[])?
+    };
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    for (asset_uid, _) in assets {
+        for tag_id in &tag_ids {
+            if operation == "add" {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO asset_tags (asset_uid, tag_id, created_at_ms) VALUES (?1, ?2, ?3)",
+                        params![asset_uid, tag_id, now_ms() as i64],
+                    )
+                    .map_err(|error| error.to_string())?;
+            } else if operation == "remove" {
+                transaction
+                    .execute(
+                        "DELETE FROM asset_tags WHERE asset_uid = ?1 AND tag_id = ?2",
+                        params![asset_uid, tag_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+            } else {
+                return Err("未知的标签批量操作".to_string());
+            }
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    let _ = app.emit("tags-changed", ());
+    let _ = app.emit("asset-index-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -1659,6 +2429,21 @@ fn remove_asset_from_index(asset_id: i64, app: AppHandle) -> Result<(), String> 
             |row| row.get(0),
         )
         .unwrap_or(None);
+    let asset_uid: Option<String> = connection
+        .query_row(
+            "SELECT asset_uid FROM indexed_assets WHERE rowid = ?1",
+            params![asset_id],
+            |row| row.get(0),
+        )
+        .ok();
+    if let Some(asset_uid) = asset_uid {
+        connection
+            .execute(
+                "DELETE FROM asset_tags WHERE asset_uid = ?1",
+                params![asset_uid],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     connection
         .execute(
             "DELETE FROM indexed_assets WHERE rowid = ?1",
@@ -3150,6 +3935,16 @@ pub fn run() {
             list_indexed_assets,
             get_asset_facets,
             get_asset_directory_tree,
+            get_tag_catalog,
+            save_tag_group,
+            delete_tag_group,
+            create_tag,
+            update_tag,
+            set_tag_archived,
+            delete_tag,
+            merge_tags,
+            set_asset_tags,
+            mutate_asset_tags,
             list_smart_views,
             save_smart_view,
             delete_smart_view,

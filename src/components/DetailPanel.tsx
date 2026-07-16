@@ -8,12 +8,15 @@ import {
   Sparkles,
   Tag,
 } from "lucide-react";
+import { useState } from "react";
+import type { TagCatalog, TagInput } from "../lib/indexedAssets";
 import type { Asset } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
 import { AudioDetailPlayer } from "./AudioPlayer";
 import { AnimatedImagePlayer } from "./AnimatedImagePlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
 import { VideoDetailPlayer } from "./VideoPlayer";
+import { TagPicker } from "./TagPicker";
 
 interface DetailPanelProps {
   asset?: Asset;
@@ -23,6 +26,10 @@ interface DetailPanelProps {
   onOpenFolder: (asset: Asset) => void;
   onRelink: (asset: Asset) => void;
   onRemoveFromIndex: (asset: Asset) => void;
+  tagCatalog?: TagCatalog;
+  onSetTags: (asset: Asset, tagIds: number[]) => Promise<void>;
+  onCreateTag: (input: TagInput) => Promise<number>;
+  onFilterTag: (tagId: number) => void;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -34,7 +41,8 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRemoveFromIndex }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onFilterTag }: DetailPanelProps) {
+  const [tagPickerOpen, setTagPickerOpen] = useState(false);
   return (
     <aside className="detail-panel">
       <div className="detail-heading">
@@ -112,9 +120,10 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           <section className="detail-section">
             <h3><Tag size={14} /> 标签</h3>
             <div className="tag-list">
-              {asset.tags.map((tag) => <button key={tag} onClick={() => onAction(`已按「${tag}」筛选`)}>{tag}</button>)}
+              {asset.tagItems?.map((tag) => <button key={tag.id} style={{ borderColor: `${tag.color}66`, color: tag.color }} onClick={() => onFilterTag(tag.id)}><i style={{ background: tag.color }} />{tag.name}</button>)}
+              {!asset.tagItems?.length && <span className="empty-tags">尚未填写标签</span>}
             </div>
-            <button className="text-button" onClick={() => onAction("标签编辑器已打开")}>＋ 添加标签</button>
+            <button className="text-button" disabled={!asset.id.startsWith("indexed-") || !tagCatalog} onClick={() => setTagPickerOpen(true)}>＋ 添加或编辑标签</button>
           </section>
 
           <section className="detail-section compact-section">
@@ -131,6 +140,15 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             </section>
           )}
         </div>
+      )}
+      {asset && tagPickerOpen && tagCatalog && (
+        <TagPicker
+          asset={asset}
+          catalog={tagCatalog}
+          onClose={() => setTagPickerOpen(false)}
+          onSave={(tagIds) => onSetTags(asset, tagIds)}
+          onCreate={onCreateTag}
+        />
       )}
     </aside>
   );
