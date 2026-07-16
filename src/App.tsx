@@ -19,6 +19,7 @@ import { AssetPreviewDialog } from "./components/AssetPreviewDialog";
 import { DetailPanel } from "./components/DetailPanel";
 import { FilterSidebar } from "./components/FilterSidebar";
 import { ScanDialog } from "./components/ScanDialog";
+import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { assets as initialAssets } from "./data/assets";
 import {
   deleteSmartView,
@@ -63,8 +64,10 @@ const categoryKinds: Partial<Record<string, AssetKind>> = {
 };
 
 export default function App() {
+  const [activeSection, setActiveSection] = useState<"资产" | "工具">("资产");
   const [libraryAssets, setLibraryAssets] = useState(initialAssets);
   const [query, setQuery] = useState("");
+  const [toolQuery, setToolQuery] = useState("");
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [activeModule, setActiveModule] = useState("全部");
   const [view, setView] = useState<AssetView>("grid");
@@ -488,10 +491,12 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${activeSection === "工具" ? "tools-active" : ""}`}>
       <AppHeader
-        query={query}
-        onQueryChange={setQuery}
+        activeSection={activeSection}
+        onSectionChange={setActiveSection}
+        query={activeSection === "工具" ? toolQuery : query}
+        onQueryChange={activeSection === "工具" ? setToolQuery : setQuery}
         activeModule={activeModule}
         onModuleChange={handleModuleChange}
         categoryCounts={categoryCounts}
@@ -505,7 +510,9 @@ export default function App() {
         backgroundTasks={backgroundTasks}
       />
 
-      <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>
+      {activeSection === "工具" ? (
+        <ToolsWorkspace query={toolQuery} onAction={showToast} />
+      ) : <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>
         {filtersOpen && (
           <FilterSidebar
             activeModule={activeModule}
@@ -607,7 +614,7 @@ export default function App() {
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}
           />
         )}
-      </section>
+      </section>}
 
       <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">{toast}</div>
       {scanScope && (

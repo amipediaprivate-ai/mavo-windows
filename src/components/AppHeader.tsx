@@ -28,6 +28,8 @@ import type { BackgroundTask, SmartView } from "../lib/indexedAssets";
 import type { ScanScope } from "../types";
 
 interface AppHeaderProps {
+  activeSection: "资产" | "工具";
+  onSectionChange: (section: "资产" | "工具") => void;
   query: string;
   onQueryChange: (value: string) => void;
   activeModule: string;
@@ -43,7 +45,7 @@ interface AppHeaderProps {
   backgroundTasks: BackgroundTask[];
 }
 
-const globalNav = ["资产", "项目"];
+const globalNav = ["资产", "项目", "工具"] as const;
 const categoryNav = [
   { label: "全部", icon: LayoutGrid },
   { label: "图片", icon: Images },
@@ -55,6 +57,8 @@ const categoryNav = [
 const managementViews = ["智能视图", "重复文件", "缺失文件"];
 
 export function AppHeader({
+  activeSection,
+  onSectionChange,
   query,
   onQueryChange,
   activeModule,
@@ -125,7 +129,12 @@ export function AppHeader({
 
         <nav className="global-nav" aria-label="全局导航">
           {globalNav.map((item) => (
-            <button key={item} className={item === "资产" ? "active" : ""} onClick={() => onAction(`${item}模块正在建设中`)}>
+            <button
+              key={item}
+              className={item === activeSection ? "active" : ""}
+              onClick={() => item === "项目" ? onAction("项目模块正在建设中") : onSectionChange(item)}
+              aria-current={item === activeSection ? "page" : undefined}
+            >
               {item}
             </button>
           ))}
@@ -137,8 +146,8 @@ export function AppHeader({
             type="search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="搜索名称、标签或文件夹…"
-            aria-label="搜索所有资源"
+            placeholder={activeSection === "工具" ? "搜索工具…" : "搜索名称、标签或文件夹…"}
+            aria-label={activeSection === "工具" ? "搜索工具" : "搜索所有资源"}
           />
           <span className="shortcut">Ctrl K</span>
         </label>
@@ -161,7 +170,7 @@ export function AppHeader({
         </div>
       </header>
 
-      <div className="module-bar">
+      {activeSection === "资产" && <div className="module-bar">
         <nav className="module-nav" aria-label="资产模块导航">
           <div className="asset-category-nav" aria-label="按媒体类型浏览">
             {categoryNav.map(({ label, icon: Icon }) => (
@@ -282,7 +291,7 @@ export function AppHeader({
             <LibraryBig size={14} /> 游戏美术资源库 <ChevronDown size={13} />
           </button>
         </div>
-      </div>
+      </div>}
     </>
   );
 }
