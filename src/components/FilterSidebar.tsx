@@ -8,8 +8,9 @@ import {
   Video,
   type LucideIcon,
 } from "lucide-react";
-import type { AssetFacets, FacetOption } from "../lib/indexedAssets";
+import type { AssetDirectoryTree, AssetFacets, FacetOption } from "../lib/indexedAssets";
 import type { Filters } from "../types";
+import { AudioDirectoryTree } from "./AudioDirectoryTree";
 
 type FilterMode = "全部" | "图片" | "动图" | "音频" | "视频";
 
@@ -17,6 +18,8 @@ interface FilterSidebarProps {
   activeModule: string;
   filters: Filters;
   facets?: AssetFacets;
+  audioDirectoryTree?: AssetDirectoryTree;
+  audioDirectoryTreeLoading?: boolean;
   onChange: (filters: Filters) => void;
   onReset: () => void;
 }
@@ -109,7 +112,7 @@ function toggleValue(values: string[], value: string) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
-export function FilterSidebar({ activeModule, filters, facets, onChange, onReset }: FilterSidebarProps) {
+export function FilterSidebar({ activeModule, filters, facets, audioDirectoryTree, audioDirectoryTreeLoading, onChange, onReset }: FilterSidebarProps) {
   const mode: FilterMode = activeModule in filterContexts ? activeModule as FilterMode : "全部";
   const context = filterContexts[mode];
   const ContextIcon = context.icon;
@@ -198,7 +201,16 @@ export function FilterSidebar({ activeModule, filters, facets, onChange, onReset
         </section>
       )}
 
-      <FilterGroup title="索引目录" selected={filters.folder} onToggle={(value) => updateList("folder", value)} options={facets?.folders ?? []} />
+      {mode === "音频" ? (
+        <AudioDirectoryTree
+          tree={audioDirectoryTree}
+          loading={audioDirectoryTreeLoading}
+          selectedPath={filters.audioDirectoryPath}
+          onSelect={(audioDirectoryPath) => onChange({ ...filters, audioDirectoryPath })}
+        />
+      ) : (
+        <FilterGroup title="索引目录" selected={filters.folder} onToggle={(value) => updateList("folder", value)} options={facets?.folders ?? []} />
+      )}
 
       <section className="filter-group compact-section">
         <div className="filter-title"><span>索引状态</span><ChevronDown size={14} /></div>

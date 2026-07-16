@@ -25,12 +25,14 @@ import {
   enrichPendingPreviews,
   listBackgroundTasks,
   listSmartViews,
+  loadAssetDirectoryTree,
   loadAssetFacets,
   loadIndexedAssets,
   relinkIndexedAsset,
   removeIndexedAsset,
   saveSmartView,
   scanDuplicateAssets,
+  type AssetDirectoryTree,
   type AssetFacets,
   type BackgroundTask,
   type SmartView,
@@ -47,6 +49,11 @@ const emptyFilters: Filters = {
 };
 
 type ListFilterKey = "source" | "kind" | "format" | "folder" | "tags";
+type FilterChipKey = ListFilterKey | "audioDirectoryPath" | "query";
+
+function directoryLabel(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
 
 const categoryKinds: Partial<Record<string, AssetKind>> = {
   图片: "图片",
@@ -75,6 +82,8 @@ export default function App() {
   const [indexRevision, setIndexRevision] = useState(0);
   const [previewAssetId, setPreviewAssetId] = useState<string>();
   const [facets, setFacets] = useState<AssetFacets>();
+  const [audioDirectoryTree, setAudioDirectoryTree] = useState<AssetDirectoryTree>();
+  const [audioDirectoryTreeLoading, setAudioDirectoryTreeLoading] = useState(false);
   const [smartViews, setSmartViews] = useState<SmartView[]>([]);
   const [activeSmartViewId, setActiveSmartViewId] = useState<number>();
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
@@ -102,8 +111,12 @@ export default function App() {
 
   const activeCategoryKind = categoryKinds[activeModule];
   const effectiveFilters = activeCategoryKind
-    ? { ...filters, kind: [activeCategoryKind] }
-    : filters;
+    ? {
+        ...filters,
+        kind: [activeCategoryKind],
+        audioDirectoryPath: activeCategoryKind === "音频" ? filters.audioDirectoryPath : undefined,
+      }
+    : activeModule === "智能视图" ? filters : { ...filters, audioDirectoryPath: undefined };
   const indexedQueryOptions = {
     query,
     filters: effectiveFilters,
@@ -176,7 +189,7 @@ export default function App() {
     const timer = window.setTimeout(() => void refreshIndexedAssets(true), 180);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort]);
+  }, [activeModule, filters.kind, filters.format, filters.folder, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort]);
 
   useEffect(() => {
     if (!indexedMode) return;
@@ -185,6 +198,34 @@ export default function App() {
         .then(setFacets).catch(() => undefined);
     }, 220);
     return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeModule, filters.kind, filters.format, filters.folder, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
+
+  useEffect(() => {
+    if (!indexedMode || activeModule !== "音频") {
+      setAudioDirectoryTree(undefined);
+      setAudioDirectoryTreeLoading(false);
+      return;
+    }
+    let disposed = false;
+    setAudioDirectoryTreeLoading(true);
+    const timer = window.setTimeout(() => {
+      void loadAssetDirectoryTree({
+        ...indexedQueryOptions,
+        filters: { ...effectiveFilters, audioDirectoryPath: undefined },
+        duplicateOnly: false,
+        availability: "available",
+      }).then((tree) => {
+        if (!disposed) setAudioDirectoryTree(tree);
+      }).catch(() => undefined).finally(() => {
+        if (!disposed) setAudioDirectoryTreeLoading(false);
+      });
+    }, 180);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+    // Directory selection is deliberately excluded so the tree remains stable while navigating.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeModule, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
 
@@ -272,20 +313,31 @@ export default function App() {
   const appliedFilterCount =
     filters.source.length + filters.kind.length + filters.format.length + filters.folder.length + filters.tags.length
     + Number(filters.minWidth !== undefined) + Number(filters.maxWidth !== undefined) + Number(filters.orientation !== undefined)
-    + Number(filters.minDurationMs !== undefined || filters.maxDurationMs !== undefined);
+    + Number(filters.minDurationMs !== undefined || filters.maxDurationMs !== undefined)
+    + Number(filters.audioDirectoryPath !== undefined);
 
   const filterChips = useMemo(() => {
-    const chips: { key: ListFilterKey | "query"; value: string; label: string }[] = [];
+    const chips: { key: FilterChipKey; value: string; label: string; title?: string }[] = [];
     (["source", "kind", "format", "folder", "tags"] as ListFilterKey[]).forEach((key) => {
       filters[key].forEach((value) => chips.push({ key, value, label: value }));
     });
+    if (filters.audioDirectoryPath) {
+      chips.push({
+        key: "audioDirectoryPath",
+        value: filters.audioDirectoryPath,
+        label: `目录：${directoryLabel(filters.audioDirectoryPath)}`,
+        title: filters.audioDirectoryPath,
+      });
+    }
     if (query.trim()) chips.push({ key: "query", value: query, label: `搜索：${query}` });
     return chips;
   }, [filters, query]);
 
-  const clearChip = (key: ListFilterKey | "query", value: string) => {
+  const clearChip = (key: FilterChipKey, value: string) => {
     if (key === "query") {
       setQuery("");
+    } else if (key === "audioDirectoryPath") {
+      setFilters((current) => ({ ...current, audioDirectoryPath: undefined }));
     } else {
       setFilters((current) => ({ ...current, [key]: current[key].filter((item) => item !== value) }));
     }
@@ -305,12 +357,16 @@ export default function App() {
         ...current,
         kind: [],
         format: [],
+        folder: module === "音频" ? [] : current.folder,
         minWidth: undefined,
         maxWidth: undefined,
         orientation: undefined,
         minDurationMs: undefined,
         maxDurationMs: undefined,
+        audioDirectoryPath: module === "音频" ? current.audioDirectoryPath : undefined,
       }));
+    } else {
+      setFilters((current) => ({ ...current, audioDirectoryPath: undefined }));
     }
     if (module !== "智能视图") setActiveSmartViewId(undefined);
     if (module === "重复文件") {
@@ -356,6 +412,7 @@ export default function App() {
       orientation: smartView.query.orientation,
       minDurationMs: smartView.query.minDurationMs,
       maxDurationMs: smartView.query.maxDurationMs,
+      audioDirectoryPath: smartView.query.audioDirectoryPath,
     });
   };
 
@@ -449,7 +506,17 @@ export default function App() {
       />
 
       <section className={`workspace ${filtersOpen ? "" : "filters-hidden"} ${detailOpen ? "" : "detail-hidden"}`}>
-        {filtersOpen && <FilterSidebar activeModule={activeModule} filters={filters} facets={facets} onChange={handleFiltersChange} onReset={() => setFilters(emptyFilters)} />}
+        {filtersOpen && (
+          <FilterSidebar
+            activeModule={activeModule}
+            filters={filters}
+            facets={facets}
+            audioDirectoryTree={audioDirectoryTree}
+            audioDirectoryTreeLoading={audioDirectoryTreeLoading}
+            onChange={handleFiltersChange}
+            onReset={() => setFilters(emptyFilters)}
+          />
+        )}
 
         <main className="main-panel">
           <div className="asset-toolbar">
@@ -506,7 +573,7 @@ export default function App() {
             <div className="active-filter-bar">
               <span className="active-filter-label">当前筛选</span>
               {filterChips.map((chip) => (
-                <button key={`${chip.key}-${chip.value}`} className="filter-chip" onClick={() => clearChip(chip.key, chip.value)}>
+                <button key={`${chip.key}-${chip.value}`} className="filter-chip" title={chip.title} onClick={() => clearChip(chip.key, chip.value)}>
                   {chip.label} <X size={12} />
                 </button>
               ))}

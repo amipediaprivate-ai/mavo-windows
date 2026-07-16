@@ -955,6 +955,130 @@ select:focus-visible,
   font-variant-numeric: tabular-nums;
 }
 
+.audio-directory-section {
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.audio-directory-section .filter-title,
+.audio-directory-search {
+  margin-right: 2px;
+  margin-left: 2px;
+}
+
+.directory-tree {
+  display: grid;
+  gap: 2px;
+}
+
+.directory-all-row,
+.directory-row {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  color: #596477;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 11px;
+}
+
+.directory-all-row {
+  gap: 7px;
+  padding: 0 7px;
+  text-align: left;
+}
+
+.directory-all-row:hover,
+.directory-row:hover {
+  color: #334158;
+  background: #f4f6fa;
+}
+
+.directory-all-row.selected,
+.directory-row.selected {
+  color: var(--primary);
+  background: #eef3ff;
+}
+
+.directory-all-row strong {
+  margin-left: auto;
+  color: #939dad;
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.directory-all-row.selected strong,
+.directory-row.selected .directory-count {
+  color: var(--primary);
+}
+
+.directory-row.empty:not(.selected) {
+  color: #9da6b5;
+}
+
+.directory-toggle {
+  width: 18px;
+  height: 24px;
+  display: grid;
+  flex: 0 0 18px;
+  padding: 0;
+  place-items: center;
+  color: #9ba4b2;
+  border: 0;
+  background: transparent;
+}
+
+.directory-toggle:disabled {
+  color: transparent;
+}
+
+.directory-toggle svg {
+  transition: transform 120ms ease;
+}
+
+.directory-toggle svg.open {
+  transform: rotate(90deg);
+}
+
+.directory-select {
+  min-width: 0;
+  min-height: 28px;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  overflow: hidden;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.directory-select svg {
+  flex: 0 0 auto;
+  color: #7d8eaa;
+}
+
+.directory-select span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-count {
+  flex: 0 0 auto;
+  margin: 0 7px 0 5px;
+  color: #a1a9b6;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 .range-row {
   display: grid;
   grid-template-columns: 1fr 15px 1fr;

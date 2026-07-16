@@ -187,6 +187,8 @@ struct IndexedFile {
     size_bytes: u64,
     modified_ms: u64,
     root: String,
+    directory_path: String,
+    directory_key: String,
     kind: String,
 }
 
@@ -207,6 +209,7 @@ struct AssetQuery {
     orientation: Option<String>,
     min_duration_ms: Option<u64>,
     max_duration_ms: Option<u64>,
+    audio_directory_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -224,6 +227,32 @@ struct AssetFacets {
     folders: Vec<FacetOption>,
     available_count: u64,
     missing_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectoryNode {
+    path: String,
+    name: String,
+    direct_count: u64,
+    subtree_count: u64,
+    children: Vec<DirectoryNode>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetDirectoryTree {
+    roots: Vec<DirectoryNode>,
+    total_count: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DirectoryAggregate {
+    path: String,
+    name: String,
+    parent_key: Option<String>,
+    direct_count: u64,
+    children: HashSet<String>,
 }
 
 #[derive(Serialize)]
@@ -379,6 +408,37 @@ fn resolve_roots(request: &ScanRequest) -> Result<Vec<PathBuf>, String> {
     Ok(roots)
 }
 
+fn normalize_directory_key(value: &Path) -> String {
+    let normalized = value.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let normalized = normalized.replace('/', "\\");
+    normalized.to_lowercase()
+}
+
+fn indexed_directory(path: &Path) -> (String, String) {
+    let directory = path.parent().unwrap_or(Path::new(""));
+    (
+        directory.to_string_lossy().into_owned(),
+        normalize_directory_key(directory),
+    )
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('!', "!!")
+        .replace('%', "!%")
+        .replace('_', "!_")
+}
+
+fn directory_subtree_pattern(key: &str) -> String {
+    let escaped = escape_like(key);
+    if key.ends_with(std::path::MAIN_SEPARATOR) {
+        format!("{escaped}%")
+    } else {
+        format!("{escaped}{}%", std::path::MAIN_SEPARATOR)
+    }
+}
+
 fn setup_database(path: &Path) -> Result<Connection, String> {
     let connection = Connection::open(path).map_err(|error| error.to_string())?;
     connection
@@ -463,6 +523,8 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
         ("loudness_status", "TEXT NOT NULL DEFAULT 'pending'"),
         ("loudness_error", "TEXT"),
         ("loudness_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("directory_path", "TEXT NOT NULL DEFAULT ''"),
+        ("directory_key", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (name, definition) in additions {
         if !columns.iter().any(|column| column == name) {
@@ -511,12 +573,69 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
             .execute_batch("COMMIT")
             .map_err(|error| error.to_string())?;
     }
+    let directories_backfilled: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'asset_directories_backfilled_v1')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !directories_backfilled {
+        let missing_directories: Vec<(i64, String)> = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT rowid, path FROM indexed_assets
+                     WHERE directory_path = '' OR directory_key = ''",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            rows
+        };
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| error.to_string())?;
+        let backfill = (|| -> Result<(), String> {
+            let mut statement = connection
+                .prepare(
+                    "UPDATE indexed_assets SET directory_path = ?1, directory_key = ?2 WHERE rowid = ?3",
+                )
+                .map_err(|error| error.to_string())?;
+            for (rowid, path) in missing_directories {
+                let (directory_path, directory_key) = indexed_directory(Path::new(&path));
+                statement
+                    .execute(params![directory_path, directory_key, rowid])
+                    .map_err(|error| error.to_string())?;
+            }
+            connection
+                .execute(
+                    "INSERT INTO app_metadata (key, value)
+                     VALUES ('asset_directories_backfilled_v1', '1')
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = backfill {
+            let _ = connection.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        connection
+            .execute_batch("COMMIT")
+            .map_err(|error| error.to_string())?;
+    }
     connection
         .execute_batch(
             "CREATE INDEX IF NOT EXISTS indexed_assets_kind_idx ON indexed_assets(kind);
              CREATE INDEX IF NOT EXISTS indexed_assets_availability_idx ON indexed_assets(availability);
              CREATE INDEX IF NOT EXISTS indexed_assets_modified_idx ON indexed_assets(modified_ms DESC);
-             CREATE INDEX IF NOT EXISTS indexed_assets_hash_idx ON indexed_assets(content_hash);",
+             CREATE INDEX IF NOT EXISTS indexed_assets_hash_idx ON indexed_assets(content_hash);
+             CREATE INDEX IF NOT EXISTS indexed_assets_audio_directory_idx
+               ON indexed_assets(kind, availability, directory_key);",
         )
         .map_err(|error| error.to_string())?;
     setup_fts(connection)?;
@@ -616,8 +735,9 @@ fn flush_batch(
         let mut statement = transaction
             .prepare_cached(
                 "INSERT INTO indexed_assets
-                 (path, name, extension, size_bytes, modified_ms, scan_root, last_scan_id, indexed_at_ms, kind, availability)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'available')
+                 (path, name, extension, size_bytes, modified_ms, scan_root, last_scan_id, indexed_at_ms,
+                  kind, directory_path, directory_key, availability)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'available')
                  ON CONFLICT(path) DO UPDATE SET
                    name = excluded.name,
                    extension = excluded.extension,
@@ -641,6 +761,8 @@ fn flush_batch(
                    last_scan_id = excluded.last_scan_id,
                    indexed_at_ms = excluded.indexed_at_ms,
                    kind = excluded.kind,
+                   directory_path = excluded.directory_path,
+                   directory_key = excluded.directory_key,
                    availability = 'available'",
             )
             .map_err(|error| error.to_string())?;
@@ -657,6 +779,8 @@ fn flush_batch(
                     scan_id,
                     indexed_at as i64,
                     file.kind,
+                    file.directory_path,
+                    file.directory_key,
                 ])
                 .map_err(|error| error.to_string())?;
         }
@@ -704,13 +828,25 @@ fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
         );
     }
     if let Some(folders) = query.folders.as_ref().filter(|items| !items.is_empty()) {
-        let clauses = vec!["path LIKE ?"; folders.len()].join(" OR ");
+        let clauses = vec!["(directory_key = ? OR directory_key LIKE ? ESCAPE '!')"; folders.len()]
+            .join(" OR ");
         where_parts.push(format!("({clauses})"));
-        values.extend(
-            folders
-                .iter()
-                .map(|folder| Value::Text(format!("{folder}%"))),
-        );
+        for folder in folders {
+            let key = normalize_directory_key(Path::new(folder));
+            values.push(Value::Text(key.clone()));
+            values.push(Value::Text(directory_subtree_pattern(&key)));
+        }
+    }
+    if let Some(directory) = query
+        .audio_directory_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let key = normalize_directory_key(Path::new(directory));
+        where_parts.push("(directory_key = ? OR directory_key LIKE ? ESCAPE '!')".to_string());
+        values.push(Value::Text(key.clone()));
+        values.push(Value::Text(directory_subtree_pattern(&key)));
     }
     if let Some(min_width) = query.min_width {
         where_parts.push("width >= ?".to_string());
@@ -895,6 +1031,203 @@ fn get_asset_facets(query: AssetQuery, app: AppHandle) -> Result<AssetFacets, St
         available_count: available_count as u64,
         missing_count: missing_count as u64,
     })
+}
+
+fn directory_name(path: &Path) -> String {
+    path.file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn key_is_in_subtree(key: &str, root_key: &str) -> bool {
+    if key == root_key {
+        return true;
+    }
+    let mut prefix = root_key.to_string();
+    if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+        prefix.push(std::path::MAIN_SEPARATOR);
+    }
+    key.starts_with(&prefix)
+}
+
+fn add_directory_chain(
+    aggregates: &mut HashMap<String, DirectoryAggregate>,
+    roots: &mut HashSet<String>,
+    directory_path: &str,
+    scan_root: &str,
+    direct_count: u64,
+) {
+    let directory = PathBuf::from(directory_path);
+    let scan_root_path = PathBuf::from(scan_root);
+    let directory_key = normalize_directory_key(&directory);
+    let scan_root_key = normalize_directory_key(&scan_root_path);
+    let bounded_by_scan_root = key_is_in_subtree(&directory_key, &scan_root_key);
+    let mut current = directory;
+    let mut child_key: Option<String> = None;
+
+    loop {
+        let current_key = normalize_directory_key(&current);
+        aggregates
+            .entry(current_key.clone())
+            .or_insert_with(|| DirectoryAggregate {
+                path: current.to_string_lossy().into_owned(),
+                name: directory_name(&current),
+                parent_key: None,
+                direct_count: 0,
+                children: HashSet::new(),
+            });
+        if current_key == directory_key {
+            if let Some(node) = aggregates.get_mut(&current_key) {
+                node.direct_count = direct_count;
+            }
+        }
+        if let Some(child_key) = child_key.as_ref() {
+            if let Some(node) = aggregates.get_mut(&current_key) {
+                node.children.insert(child_key.clone());
+            }
+            if let Some(child) = aggregates.get_mut(child_key) {
+                child.parent_key = Some(current_key.clone());
+            }
+        }
+
+        if (bounded_by_scan_root && current_key == scan_root_key) || !bounded_by_scan_root {
+            roots.insert(current_key);
+            break;
+        }
+        let Some(parent) = current.parent().map(Path::to_path_buf) else {
+            roots.insert(current_key);
+            break;
+        };
+        child_key = Some(current_key);
+        current = parent;
+    }
+}
+
+fn materialize_directory_node(
+    key: &str,
+    aggregates: &HashMap<String, DirectoryAggregate>,
+) -> Option<DirectoryNode> {
+    let aggregate = aggregates.get(key)?;
+    let mut child_keys = aggregate.children.iter().collect::<Vec<_>>();
+    child_keys.sort_by(|left, right| {
+        let left_name = aggregates
+            .get(*left)
+            .map(|value| value.name.to_lowercase())
+            .unwrap_or_default();
+        let right_name = aggregates
+            .get(*right)
+            .map(|value| value.name.to_lowercase())
+            .unwrap_or_default();
+        left_name.cmp(&right_name).then_with(|| left.cmp(right))
+    });
+    let children = child_keys
+        .into_iter()
+        .filter_map(|child_key| materialize_directory_node(child_key, aggregates))
+        .collect::<Vec<_>>();
+    let subtree_count = aggregate.direct_count
+        + children
+            .iter()
+            .map(|child| child.subtree_count)
+            .sum::<u64>();
+    Some(DirectoryNode {
+        path: aggregate.path.clone(),
+        name: aggregate.name.clone(),
+        direct_count: aggregate.direct_count,
+        subtree_count,
+        children,
+    })
+}
+
+fn build_directory_tree(
+    directories: &[(String, String, String)],
+    direct_counts: &HashMap<String, u64>,
+) -> AssetDirectoryTree {
+    let mut aggregates = HashMap::new();
+    let mut root_keys = HashSet::new();
+    for (directory_path, directory_key, scan_root) in directories {
+        add_directory_chain(
+            &mut aggregates,
+            &mut root_keys,
+            directory_path,
+            scan_root,
+            direct_counts
+                .get(directory_key)
+                .copied()
+                .unwrap_or_default(),
+        );
+    }
+    root_keys.retain(|key| {
+        aggregates
+            .get(key)
+            .is_some_and(|node| node.parent_key.is_none())
+    });
+    let mut roots = root_keys
+        .iter()
+        .filter_map(|key| materialize_directory_node(key, &aggregates))
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let total_count = roots.iter().map(|root| root.subtree_count).sum();
+    AssetDirectoryTree { roots, total_count }
+}
+
+#[tauri::command]
+fn get_asset_directory_tree(
+    query: AssetQuery,
+    app: AppHandle,
+) -> Result<AssetDirectoryTree, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let directories = {
+        let mut statement = connection
+            .prepare(
+                "SELECT directory_path, directory_key, scan_root
+                 FROM indexed_assets
+                 WHERE kind = '音频' AND availability = 'available' AND directory_key <> ''
+                 GROUP BY directory_path, directory_key, scan_root",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+
+    let mut count_query = query;
+    count_query.offset = None;
+    count_query.limit = None;
+    count_query.kinds = Some(vec!["音频".to_string()]);
+    count_query.availability = Some("available".to_string());
+    count_query.audio_directory_path = None;
+    let (where_sql, values) = build_asset_where(&count_query);
+    let direct_counts = {
+        let sql = format!(
+            "SELECT directory_key, COUNT(*) FROM indexed_assets
+             WHERE {where_sql} AND directory_key <> '' GROUP BY directory_key"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params_from_iter(values.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    Ok(build_directory_tree(&directories, &direct_counts))
 }
 
 #[tauri::command]
@@ -1283,6 +1616,7 @@ fn relink_asset(
         .unwrap_or(Path::new(""))
         .to_string_lossy()
         .into_owned();
+    let directory_key = normalize_directory_key(path.parent().unwrap_or(Path::new("")));
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -1291,14 +1625,15 @@ fn relink_asset(
     let connection = setup_database(&database_path)?;
     connection.execute(
         "UPDATE indexed_assets SET path = ?1, name = ?2, extension = ?3, kind = ?4,
-         size_bytes = ?5, modified_ms = ?6, scan_root = ?7, availability = 'available',
+         size_bytes = ?5, modified_ms = ?6, scan_root = ?7, directory_path = ?7,
+         directory_key = ?8, availability = 'available',
          width = NULL, height = NULL, duration_ms = NULL, thumbnail_path = NULL,
          metadata_status = 'pending', metadata_error = NULL, content_hash = NULL, hash_modified_ms = NULL,
          integrated_lufs = NULL, true_peak_dbtp = NULL, loudness_range_lu = NULL,
          loudness_threshold_lufs = NULL, loudness_status = 'pending', loudness_error = NULL,
          loudness_version = 1
-         WHERE rowid = ?8",
-        params![path.to_string_lossy().into_owned(), name, extension, asset_kind(&extension), metadata.len() as i64, modified_ms, folder, asset_id],
+         WHERE rowid = ?9",
+        params![path.to_string_lossy().into_owned(), name, extension, asset_kind(&extension), metadata.len() as i64, modified_ms, folder, directory_key, asset_id],
     ).map_err(|error| error.to_string())?;
     register_scan_roots(&database_path, &[PathBuf::from(folder)])?;
     let _ = watch_manager.watch_root(path.parent().unwrap_or(Path::new("")));
@@ -1470,6 +1805,7 @@ fn indexed_file_from_path(path: &Path, root: &Path) -> Option<IndexedFile> {
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_millis() as u64;
+    let (directory_path, directory_key) = indexed_directory(path);
     Some(IndexedFile {
         path: path.to_string_lossy().into_owned(),
         name: path.file_name()?.to_string_lossy().into_owned(),
@@ -1478,6 +1814,8 @@ fn indexed_file_from_path(path: &Path, root: &Path) -> Option<IndexedFile> {
         size_bytes: metadata.len(),
         modified_ms,
         root: root.to_string_lossy().into_owned(),
+        directory_path,
+        directory_key,
     })
 }
 
@@ -2448,6 +2786,7 @@ fn run_scan(
                             .max_by_key(|root| root.components().count())
                             .map(|root| root.to_string_lossy().into_owned())
                             .unwrap_or_default();
+                        let (directory_path, directory_key) = indexed_directory(path);
                         let file = IndexedFile {
                             path: path.to_string_lossy().into_owned(),
                             name: path
@@ -2459,6 +2798,8 @@ fn run_scan(
                             size_bytes: metadata.len(),
                             modified_ms,
                             root,
+                            directory_path,
+                            directory_key,
                         };
                         if sender.send(file).is_err() {
                             cancel.store(true, Ordering::Relaxed);
@@ -2804,6 +3145,7 @@ pub fn run() {
             list_scan_roots,
             list_indexed_assets,
             get_asset_facets,
+            get_asset_directory_tree,
             list_smart_views,
             save_smart_view,
             delete_smart_view,
@@ -2900,6 +3242,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kind, "视频");
+        drop(connection);
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn audio_directory_tree_preserves_ancestors_and_subtree_counts() {
+        let root = PathBuf::from(r"C:\素材库");
+        let bgm = root.join("项目 A").join("BGM");
+        let ambience = root.join("项目 A").join("环境音");
+        let voice = root.join("配音");
+        let directories = vec![
+            (
+                bgm.to_string_lossy().into_owned(),
+                normalize_directory_key(&bgm),
+                root.to_string_lossy().into_owned(),
+            ),
+            (
+                ambience.to_string_lossy().into_owned(),
+                normalize_directory_key(&ambience),
+                root.to_string_lossy().into_owned(),
+            ),
+            (
+                voice.to_string_lossy().into_owned(),
+                normalize_directory_key(&voice),
+                root.to_string_lossy().into_owned(),
+            ),
+        ];
+        let direct_counts = HashMap::from([
+            (normalize_directory_key(&bgm), 2),
+            (normalize_directory_key(&ambience), 1),
+            (normalize_directory_key(&voice), 3),
+        ]);
+
+        let tree = build_directory_tree(&directories, &direct_counts);
+        assert_eq!(tree.total_count, 6);
+        assert_eq!(tree.roots.len(), 1);
+        let library = &tree.roots[0];
+        assert_eq!(library.name, "素材库");
+        assert_eq!(library.subtree_count, 6);
+        let project = library
+            .children
+            .iter()
+            .find(|node| node.name == "项目 A")
+            .unwrap();
+        assert_eq!(project.direct_count, 0);
+        assert_eq!(project.subtree_count, 3);
+        assert_eq!(project.children.len(), 2);
+    }
+
+    #[test]
+    fn directory_filter_respects_boundaries_and_like_wildcards() {
+        let workspace = test_workspace("directory-filter");
+        fs::create_dir_all(&workspace).unwrap();
+        let database = workspace.join("index.sqlite3");
+        let connection = setup_database(&database).unwrap();
+        let rows = [
+            (r"C:\Music\track.wav", r"C:\Music"),
+            (r"C:\Music2\other.wav", r"C:\Music2"),
+            (r"C:\100%\Audio\literal.wav", r"C:\100%\Audio"),
+        ];
+        for (index, (path, directory)) in rows.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO indexed_assets
+                     (path, name, extension, size_bytes, modified_ms, scan_root, last_scan_id,
+                      indexed_at_ms, kind, availability, directory_path, directory_key)
+                     VALUES (?1, ?2, 'wav', 1, 1, 'C:\\', 'scan', 1, '音频', 'available', ?3, ?4)",
+                    params![
+                        path,
+                        format!("track-{index}.wav"),
+                        directory,
+                        normalize_directory_key(Path::new(directory))
+                    ],
+                )
+                .unwrap();
+        }
+
+        for (directory, expected) in [(r"C:\Music", 1_i64), (r"C:\100%", 1_i64)] {
+            let query = AssetQuery {
+                audio_directory_path: Some(directory.to_string()),
+                kinds: Some(vec!["音频".to_string()]),
+                ..Default::default()
+            };
+            let (where_sql, values) = build_asset_where(&query);
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM indexed_assets WHERE {where_sql}"),
+                    params_from_iter(values.iter()),
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, expected, "unexpected count for {directory}");
+        }
         drop(connection);
         fs::remove_dir_all(workspace).unwrap();
     }

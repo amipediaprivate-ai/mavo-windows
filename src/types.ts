@@ -44,4 +44,5 @@ export interface Filters {
   orientation?: "square" | "landscape" | "portrait" | "wide";
   minDurationMs?: number;
   maxDurationMs?: number;
+  audioDirectoryPath?: string;
 }

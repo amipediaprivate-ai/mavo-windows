@@ -54,6 +54,7 @@ export interface AssetQuerySpec {
   orientation?: Filters["orientation"];
   minDurationMs?: number;
   maxDurationMs?: number;
+  audioDirectoryPath?: string;
 }
 
 export interface FacetOption {
@@ -67,6 +68,19 @@ export interface AssetFacets {
   folders: FacetOption[];
   availableCount: number;
   missingCount: number;
+}
+
+export interface DirectoryNode {
+  path: string;
+  name: string;
+  directCount: number;
+  subtreeCount: number;
+  children: DirectoryNode[];
+}
+
+export interface AssetDirectoryTree {
+  roots: DirectoryNode[];
+  totalCount: number;
 }
 
 export interface SmartView {
@@ -191,6 +205,7 @@ export function buildAssetQuery(options: LoadIndexedAssetsOptions = {}): AssetQu
     orientation: options.filters?.orientation,
     minDurationMs: options.filters?.minDurationMs,
     maxDurationMs: options.filters?.maxDurationMs,
+    audioDirectoryPath: options.filters?.audioDirectoryPath,
   };
 }
 
@@ -201,6 +216,10 @@ export async function loadIndexedAssets(options: LoadIndexedAssetsOptions = {}) 
 
 export async function loadAssetFacets(options: LoadIndexedAssetsOptions = {}) {
   return invoke<AssetFacets>("get_asset_facets", { query: buildAssetQuery(options) });
+}
+
+export async function loadAssetDirectoryTree(options: LoadIndexedAssetsOptions = {}) {
+  return invoke<AssetDirectoryTree>("get_asset_directory_tree", { query: buildAssetQuery(options) });
 }
 
 export async function listSmartViews() {
