@@ -26,6 +26,7 @@ import { assets as initialAssets } from "./data/assets";
 import {
   deleteSmartView,
   enrichPendingPreviews,
+  getBackgroundTasksPaused,
   listBackgroundTasks,
   listSmartViews,
   loadAssetDirectoryTree,
@@ -35,12 +36,14 @@ import {
   createTag,
   setAssetTags,
   mutateAssetTags,
+  noteUserInteraction,
   renameIndexedAsset,
   relinkIndexedAsset,
   removeIndexedAsset,
   saveTagGroup,
   saveSmartView,
   scanDuplicateAssets,
+  setBackgroundTasksPaused,
   type AssetDirectoryTree,
   type AssetFacets,
   type BackgroundTask,
@@ -108,6 +111,7 @@ export default function App() {
   const [smartViews, setSmartViews] = useState<SmartView[]>([]);
   const [activeSmartViewId, setActiveSmartViewId] = useState<number>();
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
+  const [backgroundPaused, setBackgroundPaused] = useState(false);
   const [tagCatalog, setTagCatalog] = useState<TagCatalog>({ groups: [], tags: [] });
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
@@ -136,6 +140,29 @@ export default function App() {
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
+  useEffect(() => {
+    let lastSignal = 0;
+    const signalInteraction = () => {
+      const timestamp = performance.now();
+      if (timestamp - lastSignal < 250) return;
+      lastSignal = timestamp;
+      void noteUserInteraction().catch(() => undefined);
+    };
+    const passiveCapture = { capture: true, passive: true } as const;
+    window.addEventListener("pointerdown", signalInteraction, passiveCapture);
+    window.addEventListener("pointermove", signalInteraction, passiveCapture);
+    window.addEventListener("keydown", signalInteraction, true);
+    window.addEventListener("wheel", signalInteraction, passiveCapture);
+    window.addEventListener("scroll", signalInteraction, passiveCapture);
+    return () => {
+      window.removeEventListener("pointerdown", signalInteraction, true);
+      window.removeEventListener("pointermove", signalInteraction, true);
+      window.removeEventListener("keydown", signalInteraction, true);
+      window.removeEventListener("wheel", signalInteraction, true);
+      window.removeEventListener("scroll", signalInteraction, true);
+    };
+  }, []);
+
   const activeCategoryKind = categoryKinds[activeModule];
   const canSortByDuration = activeCategoryKind === "音频";
   useEffect(() => {
@@ -155,6 +182,8 @@ export default function App() {
     availability: activeModule === "缺失文件" ? "missing" : "available",
     duplicateOnly: activeModule === "重复文件",
   }), [activeModule, effectiveFilters, query, sort]);
+  const backgroundHeavyWorkRunning = backgroundTasks.some((task) =>
+    task.status === "running" && ["analysis", "thumbnail", "loudness"].includes(task.taskType));
   indexedModeRef.current = indexedMode;
   indexedQueryOptionsRef.current = indexedQueryOptions;
 
@@ -206,6 +235,7 @@ export default function App() {
           return [...byId.values()].sort((left, right) => right.updatedAtMs - left.updatedAtMs).slice(0, 24);
         });
       }).catch(() => undefined);
+      void getBackgroundTasksPaused().then(setBackgroundPaused).catch(() => undefined);
       void enrichPendingPreviews(() => undefined)
         .then(() => setIndexRevision((revision) => revision + 1))
         .catch(() => undefined);
@@ -253,14 +283,14 @@ export default function App() {
   }, [activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort]);
 
   useEffect(() => {
-    if (!indexedMode) return;
+    if (!indexedMode || backgroundHeavyWorkRunning) return;
     const timer = window.setTimeout(() => {
       void loadAssetFacets({ ...indexedQueryOptions, duplicateOnly: false, availability: "available" })
         .then(setFacets).catch(() => undefined);
     }, 220);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
+  }, [activeModule, backgroundHeavyWorkRunning, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
 
   useEffect(() => {
     if (!indexedMode || activeModule !== "音频") {
@@ -268,6 +298,7 @@ export default function App() {
       setAudioDirectoryTreeLoading(false);
       return;
     }
+    if (backgroundHeavyWorkRunning) return;
     let disposed = false;
     setAudioDirectoryTreeLoading(true);
     const timer = window.setTimeout(() => {
@@ -288,15 +319,15 @@ export default function App() {
     };
     // Directory selection is deliberately excluded so the tree remains stable while navigating.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
+  }, [activeModule, backgroundHeavyWorkRunning, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
 
   useEffect(() => {
-    if (indexRevision === 0) return;
+    if (indexRevision === 0 || backgroundHeavyWorkRunning) return;
     const timer = window.setTimeout(() => void refreshIndexedAssets(true), 500);
     return () => window.clearTimeout(timer);
     // Coalesce the scan writer and thumbnail worker's frequent commit notifications.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [indexRevision]);
+  }, [backgroundHeavyWorkRunning, indexRevision]);
 
   const loadMoreIndexedAssets = useCallback(async () => {
     if (!indexedMode || nextOffset === undefined || assetPageLoadActive.current) return;
@@ -652,6 +683,11 @@ export default function App() {
         onSmartViewSelect={handleSmartViewSelect}
         onDeleteSmartView={(viewId) => void handleDeleteSmartView(viewId)}
         backgroundTasks={backgroundTasks}
+        backgroundPaused={backgroundPaused}
+        onBackgroundPausedChange={(paused) => {
+          setBackgroundPaused(paused);
+          void setBackgroundTasksPaused(paused).catch(() => setBackgroundPaused(!paused));
+        }}
       />
 
       {activeSection === "工具" ? (

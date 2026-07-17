@@ -1,5 +1,8 @@
 use ignore::{WalkBuilder, WalkState};
-use image::{DynamicImage, GenericImageView, ImageBuffer, ImageFormat, ImageReader, Rgba};
+use image::{
+    codecs::jpeg::JpegEncoder, DynamicImage, ExtendedColorType, GenericImageView, ImageBuffer,
+    ImageFormat, ImageReader, Limits, Rgba,
+};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use psd::Psd;
 use rusqlite::{params, params_from_iter, types::Value, Connection};
@@ -36,6 +39,7 @@ use tauri::{
 
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 static MEDIA_TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
+static MEDIA_ENRICHMENT_LOCK: Mutex<()> = Mutex::new(());
 
 fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -63,10 +67,15 @@ fn background_windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Comman
     command
 }
 
-const MAX_PSD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_PSD_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
+const MAX_PSD_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PSD_PREVIEW_PIXELS: u64 = 32 * 1024 * 1024;
+const MAX_IMAGE_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
+const MAX_IMAGE_PREVIEW_DIMENSION: u32 = 16_384;
+const MAX_IMAGE_PREVIEW_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
+const BACKGROUND_IDLE_GRACE_MS: u64 = 700;
 const PREVIEW_REFRESH_INTERVAL: usize = 64;
-const PREVIEW_WORKER_COUNT: usize = 2;
+const PREVIEW_WORKER_COUNT: usize = 1;
+const PREVIEW_COMMIT_BATCH_SIZE: usize = 8;
 const MAX_MEDIA_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
 const ASSET_EXTENSIONS: &[&str] = &[
@@ -86,6 +95,40 @@ struct ScanManager {
 struct BackgroundTaskManager {
     tasks: Arc<Mutex<HashMap<String, BackgroundTask>>>,
     enrichment_lock: Arc<Mutex<()>>,
+    last_user_interaction_ms: Arc<AtomicU64>,
+    paused: Arc<AtomicBool>,
+}
+
+impl BackgroundTaskManager {
+    fn note_user_interaction(&self) {
+        self.last_user_interaction_ms
+            .store(now_ms(), Ordering::Relaxed);
+    }
+
+    fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    fn wait_until_background_allowed(&self) {
+        loop {
+            let paused = self.is_paused();
+            let idle_ms =
+                now_ms().saturating_sub(self.last_user_interaction_ms.load(Ordering::Relaxed));
+            if !paused && idle_ms >= BACKGROUND_IDLE_GRACE_MS {
+                return;
+            }
+            let wait_ms = if paused {
+                100
+            } else {
+                (BACKGROUND_IDLE_GRACE_MS - idle_ms).clamp(20, 100)
+            };
+            thread::sleep(Duration::from_millis(wait_ms));
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -523,8 +566,8 @@ fn open_database(path: &Path) -> Result<Connection, String> {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = ON;
-             PRAGMA cache_size = -65536;
-             PRAGMA mmap_size = 268435456;
+             PRAGMA cache_size = -32768;
+             PRAGMA mmap_size = 134217728;
              PRAGMA temp_store = MEMORY;",
         )
         .map_err(|error| error.to_string())?;
@@ -1186,8 +1229,7 @@ fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
     (where_parts.join(" AND "), values)
 }
 
-#[tauri::command]
-fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, String> {
+fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<AssetPage, String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -1311,6 +1353,13 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
     })
 }
 
+#[tauri::command]
+async fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, String> {
+    tauri::async_runtime::spawn_blocking(move || list_indexed_assets_blocking(query, app))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 fn asset_order_sql(sort: Option<&str>) -> &'static str {
     match sort {
         Some("name") => "(metadata_status = 'unsupported') ASC, name COLLATE NOCASE ASC, path ASC",
@@ -1347,8 +1396,7 @@ fn query_facets(
     Ok(rows)
 }
 
-#[tauri::command]
-fn get_asset_facets(query: AssetQuery, app: AppHandle) -> Result<AssetFacets, String> {
+fn get_asset_facets_blocking(query: AssetQuery, app: AppHandle) -> Result<AssetFacets, String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -1392,6 +1440,13 @@ fn get_asset_facets(query: AssetQuery, app: AppHandle) -> Result<AssetFacets, St
         available_count: available_count as u64,
         missing_count: missing_count as u64,
     })
+}
+
+#[tauri::command]
+async fn get_asset_facets(query: AssetQuery, app: AppHandle) -> Result<AssetFacets, String> {
+    tauri::async_runtime::spawn_blocking(move || get_asset_facets_blocking(query, app))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 fn directory_name(path: &Path) -> String {
@@ -1537,8 +1592,7 @@ fn build_directory_tree(
     AssetDirectoryTree { roots, total_count }
 }
 
-#[tauri::command]
-fn get_asset_directory_tree(
+fn get_asset_directory_tree_blocking(
     query: AssetQuery,
     app: AppHandle,
 ) -> Result<AssetDirectoryTree, String> {
@@ -1589,6 +1643,16 @@ fn get_asset_directory_tree(
         rows
     };
     Ok(build_directory_tree(&directories, &direct_counts))
+}
+
+#[tauri::command]
+async fn get_asset_directory_tree(
+    query: AssetQuery,
+    app: AppHandle,
+) -> Result<AssetDirectoryTree, String> {
+    tauri::async_runtime::spawn_blocking(move || get_asset_directory_tree_blocking(query, app))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 fn validated_tag_input(input: TagInput) -> Result<TagInput, String> {
@@ -3012,21 +3076,40 @@ fn decode_preview(path: &Path) -> Result<DynamicImage, String> {
     if extension.eq_ignore_ascii_case("psd") {
         decode_psd_preview(path)
     } else {
-        ImageReader::open(path)
-            .map_err(|error| error.to_string())?
-            .decode()
-            .map_err(|error| error.to_string())
+        let mut reader = ImageReader::open(path).map_err(|error| error.to_string())?;
+        let mut limits = Limits::default();
+        limits.max_image_width = Some(MAX_IMAGE_PREVIEW_DIMENSION);
+        limits.max_image_height = Some(MAX_IMAGE_PREVIEW_DIMENSION);
+        limits.max_alloc = Some(MAX_IMAGE_PREVIEW_ALLOC_BYTES);
+        reader.limits(limits);
+        let image = reader.decode().map_err(|error| error.to_string())?;
+        let (width, height) = image.dimensions();
+        if u64::from(width) * u64::from(height) > MAX_IMAGE_PREVIEW_PIXELS {
+            return Err("Image dimensions exceed the safe preview limit".to_string());
+        }
+        Ok(image)
     }
 }
 
-fn media_thumbnail_path(thumbnail_dir: &Path, path: &str, modified_ms: i64) -> PathBuf {
+fn media_thumbnail_path(thumbnail_dir: &Path, path: &str, modified_ms: i64, kind: &str) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     modified_ms.hash(&mut hasher);
     let digest = format!("{:016x}", hasher.finish());
     let shard = thumbnail_dir.join(&digest[..2]);
     let _ = fs::create_dir_all(&shard);
-    shard.join(format!("{digest}.webp"))
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let preserves_alpha = kind != "视频"
+        && kind != "音频"
+        && matches!(extension.as_str(), "png" | "webp" | "gif" | "ico" | "psd");
+    shard.join(format!(
+        "{digest}.{}",
+        if preserves_alpha { "webp" } else { "jpg" }
+    ))
 }
 
 fn media_command(name: &str) -> Command {
@@ -3117,10 +3200,19 @@ fn generate_image_preview(path: &Path, thumbnail_path: &Path) -> Result<(u32, u3
     catch_unwind(AssertUnwindSafe(|| {
         let image = decode_preview(path)?;
         let dimensions = image.dimensions();
-        image
-            .thumbnail(480, 320)
-            .save_with_format(thumbnail_path, ImageFormat::WebP)
-            .map_err(|error| error.to_string())?;
+        let thumbnail = image.thumbnail(480, 320);
+        if thumbnail_path.extension().and_then(|value| value.to_str()) == Some("jpg") {
+            let rgb = thumbnail.to_rgb8();
+            let (width, height) = rgb.dimensions();
+            let file = File::create(thumbnail_path).map_err(|error| error.to_string())?;
+            JpegEncoder::new_with_quality(file, 82)
+                .encode(&rgb, width, height, ExtendedColorType::Rgb8)
+                .map_err(|error| error.to_string())?;
+        } else {
+            thumbnail
+                .save_with_format(thumbnail_path, ImageFormat::WebP)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(dimensions)
     }))
     .unwrap_or_else(|payload| Err(format!("预览解码异常：{}", panic_message(payload))))
@@ -3179,7 +3271,18 @@ fn enrich_media_file(
         .unwrap_or_default();
 
     let mut command = media_command("ffmpeg");
-    command.args(["-nostdin", "-v", "error", "-y"]);
+    command.args([
+        "-nostdin",
+        "-v",
+        "error",
+        "-y",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
+    ]);
     if kind == "视频" {
         command.args(["-ss", "1"]).arg("-i").arg(path).args([
             "-frames:v",
@@ -3249,7 +3352,18 @@ fn parse_loudnorm_output(stderr: &[u8]) -> Result<AudioLoudness, String> {
 fn analyze_audio_loudness(path: &Path, duration_ms: i64) -> Result<AudioLoudness, String> {
     let mut command = media_command("ffmpeg");
     command
-        .args(["-hide_banner", "-nostats", "-nostdin", "-v", "info", "-i"])
+        .args([
+            "-hide_banner",
+            "-nostats",
+            "-nostdin",
+            "-v",
+            "info",
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
+            "-i",
+        ])
         .arg(path)
         .args([
             "-map",
@@ -3390,6 +3504,15 @@ fn enrich_pending_audio_loudness(
     }
 
     for (index, (path, modified_ms, duration_ms)) in audio_files.into_iter().enumerate() {
+        if let Some(manager) = task_manager {
+            manager.wait_until_background_allowed();
+        }
+        let _media_guard = MEDIA_ENRICHMENT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(manager) = task_manager {
+            manager.wait_until_background_allowed();
+        }
         let current_item = Path::new(&path)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
@@ -3499,7 +3622,7 @@ fn enrich_pending_images(
         None
     };
     fs::create_dir_all(&thumbnail_dir).map_err(|error| error.to_string())?;
-    let connection = setup_database(&database_path)?;
+    let mut connection = setup_database(&database_path)?;
     let paths = {
         let mut statement = connection
             .prepare(
@@ -3541,62 +3664,81 @@ fn enrich_pending_images(
     }
 
     let mut completed = 0_u64;
-    for batch in paths.chunks(PREVIEW_WORKER_COUNT) {
-        let batch_results = thread::scope(|scope| {
-            let handles = batch
-                .iter()
-                .cloned()
-                .map(|(path, modified_ms, kind)| {
-                    let thumbnail_dir = thumbnail_dir.clone();
-                    scope.spawn(move || {
-                        enter_background_mode();
-                        let thumbnail_path =
-                            media_thumbnail_path(&thumbnail_dir, &path, modified_ms);
-                        let result = if kind == "视频" || kind == "音频" {
-                            catch_unwind(AssertUnwindSafe(|| {
-                                enrich_media_file(Path::new(&path), &kind, &thumbnail_path)
-                            }))
-                            .unwrap_or_else(|payload| {
-                                Err(format!("媒体解码异常：{}", panic_message(payload)))
-                            })
-                            .map(
-                                |(width, height, duration_ms, generated_thumbnail)| {
-                                    (width, height, Some(duration_ms), generated_thumbnail)
-                                },
-                            )
-                        } else {
-                            generate_image_preview(Path::new(&path), &thumbnail_path).map(
-                                |(width, height)| {
-                                    (
-                                        Some(width as i64),
-                                        Some(height as i64),
-                                        None,
-                                        Some(thumbnail_path.to_string_lossy().into_owned()),
-                                    )
-                                },
-                            )
-                        };
-                        (path, modified_ms, result)
+    let mut last_progress_update = Instant::now();
+    for commit_batch in paths.chunks(PREVIEW_COMMIT_BATCH_SIZE) {
+        let mut commit_results = Vec::with_capacity(commit_batch.len());
+        for batch in commit_batch.chunks(PREVIEW_WORKER_COUNT) {
+            if let Some(manager) = task_manager.as_ref() {
+                manager.wait_until_background_allowed();
+            }
+            let batch_results = thread::scope(|scope| {
+                let handles = batch
+                    .iter()
+                    .cloned()
+                    .map(|(path, modified_ms, kind)| {
+                        let thumbnail_dir = thumbnail_dir.clone();
+                        let manager = task_manager.clone();
+                        scope.spawn(move || {
+                            enter_background_mode();
+                            let thumbnail_path =
+                                media_thumbnail_path(&thumbnail_dir, &path, modified_ms, &kind);
+                            let result = if kind == "视频" || kind == "音频" {
+                                let _media_guard = MEDIA_ENRICHMENT_LOCK
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                if let Some(manager) = manager.as_ref() {
+                                    manager.wait_until_background_allowed();
+                                }
+                                catch_unwind(AssertUnwindSafe(|| {
+                                    enrich_media_file(Path::new(&path), &kind, &thumbnail_path)
+                                }))
+                                .unwrap_or_else(|payload| {
+                                    Err(format!("媒体解码异常：{}", panic_message(payload)))
+                                })
+                                .map(
+                                    |(width, height, duration_ms, generated_thumbnail)| {
+                                        (width, height, Some(duration_ms), generated_thumbnail)
+                                    },
+                                )
+                            } else {
+                                generate_image_preview(Path::new(&path), &thumbnail_path).map(
+                                    |(width, height)| {
+                                        (
+                                            Some(width as i64),
+                                            Some(height as i64),
+                                            None,
+                                            Some(thumbnail_path.to_string_lossy().into_owned()),
+                                        )
+                                    },
+                                )
+                            };
+                            (path, modified_ms, result)
+                        })
                     })
-                })
-                .collect::<Vec<_>>();
-            handles
-                .into_iter()
-                .map(|handle| {
-                    handle
-                        .join()
-                        .map_err(|payload| format!("预览工作线程异常：{}", panic_message(payload)))
-                })
-                .collect::<Result<Vec<_>, String>>()
-        })?;
+                    .collect::<Vec<_>>();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle.join().map_err(|payload| {
+                            format!("预览工作线程异常：{}", panic_message(payload))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })?;
+            commit_results.extend(batch_results);
+        }
 
-        for (path, modified_ms, enrichment) in batch_results {
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let mut current_item = None;
+        for (path, modified_ms, enrichment) in commit_results {
             let index = completed as usize;
-            let current_item = Path::new(&path)
+            current_item = Path::new(&path)
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned());
             let item_result = match enrichment {
-                Ok((width, height, duration_ms, generated_thumbnail)) => connection
+                Ok((width, height, duration_ms, generated_thumbnail)) => transaction
                     .execute(
                         "UPDATE indexed_assets SET width = ?1, height = ?2, duration_ms = ?3,
                          thumbnail_path = ?4, metadata_status = 'ready', metadata_error = NULL
@@ -3605,7 +3747,7 @@ fn enrich_pending_images(
                     )
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
-                Err(error) => connection
+                Err(error) => transaction
                     .execute(
                         "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1
                          WHERE path = ?2 AND modified_ms = ?3",
@@ -3641,24 +3783,26 @@ fn enrich_pending_images(
                     ));
                 }
             }
-            if completed == 1 || completed % 8 == 0 || completed == total {
-                if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
-                    publish_enrichment_tasks(
-                        app,
-                        manager,
-                        &scan_id,
-                        completed,
-                        total,
-                        current_item,
-                        if completed == total {
-                            "completed"
-                        } else {
-                            "running"
-                        },
-                        task_started_at_ms,
-                    );
-                }
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        if last_progress_update.elapsed() >= Duration::from_millis(250) || completed == total {
+            if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+                publish_enrichment_tasks(
+                    app,
+                    manager,
+                    &scan_id,
+                    completed,
+                    total,
+                    current_item,
+                    if completed == total {
+                        "completed"
+                    } else {
+                        "running"
+                    },
+                    task_started_at_ms,
+                );
             }
+            last_progress_update = Instant::now();
         }
     }
     enrich_pending_audio_loudness(
@@ -4137,6 +4281,21 @@ fn list_background_tasks(
     Ok(tasks)
 }
 
+#[tauri::command]
+fn note_user_interaction(manager: State<'_, BackgroundTaskManager>) {
+    manager.note_user_interaction();
+}
+
+#[tauri::command]
+fn set_background_tasks_paused(paused: bool, manager: State<'_, BackgroundTaskManager>) {
+    manager.set_paused(paused);
+}
+
+#[tauri::command]
+fn get_background_tasks_paused(manager: State<'_, BackgroundTaskManager>) -> bool {
+    manager.is_paused()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -4219,6 +4378,9 @@ pub fn run() {
             remove_asset_from_index,
             scan_duplicates,
             list_background_tasks,
+            note_user_interaction,
+            set_background_tasks_paused,
+            get_background_tasks_paused,
             enrich_pending_previews,
             start_scan,
             cancel_scan

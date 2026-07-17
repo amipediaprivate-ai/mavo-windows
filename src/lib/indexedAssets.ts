@@ -284,6 +284,18 @@ export async function listBackgroundTasks() {
   return invoke<BackgroundTask[]>("list_background_tasks");
 }
 
+export async function noteUserInteraction() {
+  await invoke("note_user_interaction");
+}
+
+export async function getBackgroundTasksPaused() {
+  return invoke<boolean>("get_background_tasks_paused");
+}
+
+export async function setBackgroundTasksPaused(paused: boolean) {
+  await invoke("set_background_tasks_paused", { paused });
+}
+
 export async function relinkIndexedAsset(asset: Asset, newPath: string) {
   await invoke("relink_asset", { assetId: Number(asset.id.replace("indexed-", "")), newPath });
 }

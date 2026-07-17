@@ -15,6 +15,8 @@ import {
   LibraryBig,
   LoaderCircle,
   Music2,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -43,6 +45,8 @@ interface AppHeaderProps {
   onSmartViewSelect: (viewId: number) => void;
   onDeleteSmartView: (viewId: number) => void;
   backgroundTasks: BackgroundTask[];
+  backgroundPaused: boolean;
+  onBackgroundPausedChange: (paused: boolean) => void;
 }
 
 const globalNav = ["资产", "项目", "工具"] as const;
@@ -72,6 +76,8 @@ export function AppHeader({
   onSmartViewSelect,
   onDeleteSmartView,
   backgroundTasks,
+  backgroundPaused,
+  onBackgroundPausedChange,
 }: AppHeaderProps) {
   const [tasksOpen, setTasksOpen] = useState(false);
   const tasksRef = useRef<HTMLDivElement>(null);
@@ -218,11 +224,22 @@ export function AppHeader({
                 <header>
                   <div>
                     <strong>后台任务</strong>
-                    <span>{runningTasks.length ? `${runningTasks.length} 项正在进行` : "当前没有运行中的任务"}</span>
+                    <span>{backgroundPaused ? "媒体处理已暂停" : runningTasks.length ? `${runningTasks.length} 项正在进行` : "当前没有运行中的任务"}</span>
                   </div>
-                  {runningTasks.length > 0 && overallProgress !== undefined && (
-                    <b>{Math.round(overallProgress * 100)}%</b>
-                  )}
+                  <div className="background-task-controls">
+                    {runningTasks.length > 0 && overallProgress !== undefined && (
+                      <b>{Math.round(overallProgress * 100)}%</b>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onBackgroundPausedChange(!backgroundPaused)}
+                      aria-label={backgroundPaused ? "继续媒体处理" : "暂停媒体处理"}
+                      title={backgroundPaused ? "继续媒体处理" : "暂停媒体处理"}
+                    >
+                      {backgroundPaused ? <Play size={13} /> : <Pause size={13} />}
+                      {backgroundPaused ? "继续" : "暂停"}
+                    </button>
+                  </div>
                 </header>
                 <div className="background-task-list">
                   {visibleTasks.length === 0 ? (

@@ -524,7 +524,7 @@ select:focus-visible,
   background: linear-gradient(180deg, #fbfcff, #fff);
 }
 
-.background-task-panel > header > div {
+.background-task-panel > header > div:first-child {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -541,9 +541,35 @@ select:focus-visible,
 }
 
 .background-task-panel > header b {
-  margin-left: auto;
   color: var(--primary);
   font-size: 16px;
+}
+
+.background-task-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.background-task-controls button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 9px;
+  color: #536071;
+  border: 1px solid #dfe4ed;
+  border-radius: 7px;
+  background: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.background-task-controls button:hover {
+  color: var(--primary);
+  border-color: #cbd5ff;
+  background: #f7f8ff;
 }
 
 .background-task-list {
