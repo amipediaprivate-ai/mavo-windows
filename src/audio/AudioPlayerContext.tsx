@@ -104,7 +104,9 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
         tickerRef.current = undefined;
         return;
       }
-      if (timestamp - lastTickRef.current >= 50) {
+      // Five visual updates per second keep the waveform smooth enough while
+      // avoiding a context-driven re-render of every visible audio card at 20 Hz.
+      if (timestamp - lastTickRef.current >= 200) {
         lastTickRef.current = timestamp;
         setCurrentTime(audio.currentTime);
       }

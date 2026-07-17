@@ -17,7 +17,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, sync_channel, Receiver},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, TryLockError,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -50,9 +50,23 @@ fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
+fn background_windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = windowless_command(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    }
+    command
+}
+
 const MAX_PSD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PSD_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
-const PREVIEW_REFRESH_INTERVAL: usize = 8;
+const PREVIEW_REFRESH_INTERVAL: usize = 64;
+const PREVIEW_WORKER_COUNT: usize = 2;
 const MAX_MEDIA_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
 const ASSET_EXTENSIONS: &[&str] = &[
@@ -197,6 +211,7 @@ struct IndexedFile {
 struct AssetQuery {
     offset: Option<u32>,
     limit: Option<u32>,
+    include_total: Option<bool>,
     query: Option<String>,
     kinds: Option<Vec<String>>,
     extensions: Option<Vec<String>>,
@@ -363,7 +378,7 @@ struct AudioLoudness {
 struct AssetPage {
     items: Vec<IndexedAssetSummary>,
     next_offset: Option<u32>,
-    total: u64,
+    total: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -500,11 +515,24 @@ fn directory_subtree_pattern(key: &str) -> String {
     }
 }
 
-fn setup_database(path: &Path) -> Result<Connection, String> {
+fn open_database(path: &Path) -> Result<Connection, String> {
     let connection = Connection::open(path).map_err(|error| error.to_string())?;
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA cache_size = -65536;
+             PRAGMA mmap_size = 268435456;
+             PRAGMA temp_store = MEMORY;",
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(connection)
+}
+
+fn initialize_database(path: &Path) -> Result<Connection, String> {
+    let connection = open_database(path)?;
     connection
         .execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -585,6 +613,9 @@ fn setup_database(path: &Path) -> Result<Connection, String> {
         .map_err(|error| error.to_string())?;
     migrate_indexed_assets(&connection)?;
     setup_default_tags(&connection)?;
+    connection
+        .execute_batch("PRAGMA optimize=0x10002;")
+        .map_err(|error| error.to_string())?;
     Ok(connection)
 }
 
@@ -849,12 +880,42 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
              CREATE INDEX IF NOT EXISTS indexed_assets_availability_idx ON indexed_assets(availability);
              CREATE INDEX IF NOT EXISTS indexed_assets_modified_idx ON indexed_assets(modified_ms DESC);
              CREATE INDEX IF NOT EXISTS indexed_assets_hash_idx ON indexed_assets(content_hash);
-             CREATE INDEX IF NOT EXISTS indexed_assets_audio_directory_idx
-               ON indexed_assets(kind, availability, directory_key);",
+              CREATE INDEX IF NOT EXISTS indexed_assets_directory_key_idx ON indexed_assets(directory_key);
+              CREATE INDEX IF NOT EXISTS indexed_assets_available_kind_idx
+                ON indexed_assets(availability, kind);
+              CREATE INDEX IF NOT EXISTS indexed_assets_available_extension_idx
+                ON indexed_assets(availability, extension);
+              CREATE INDEX IF NOT EXISTS indexed_assets_available_root_idx
+                ON indexed_assets(availability, scan_root);
+              CREATE INDEX IF NOT EXISTS indexed_assets_newest_order_idx
+                ON indexed_assets(availability, (metadata_status = 'unsupported'), modified_ms DESC, path);
+              CREATE INDEX IF NOT EXISTS indexed_assets_name_order_idx
+                ON indexed_assets(availability, (metadata_status = 'unsupported'), name COLLATE NOCASE, path);
+              CREATE INDEX IF NOT EXISTS indexed_assets_size_order_idx
+                ON indexed_assets(availability, (metadata_status = 'unsupported'), size_bytes DESC, path);
+              CREATE INDEX IF NOT EXISTS indexed_assets_duration_order_idx
+                ON indexed_assets(availability, (metadata_status = 'unsupported'), (duration_ms IS NULL), duration_ms DESC, path);
+              CREATE INDEX IF NOT EXISTS indexed_assets_pending_preview_idx
+                ON indexed_assets(availability, metadata_status, modified_ms DESC, path)
+                WHERE availability = 'available' AND metadata_status = 'pending';
+              CREATE INDEX IF NOT EXISTS indexed_assets_pending_loudness_idx
+                ON indexed_assets(kind, availability, loudness_status, metadata_status, modified_ms DESC, path);
+              CREATE INDEX IF NOT EXISTS indexed_assets_audio_directory_idx
+                ON indexed_assets(kind, availability, directory_key);",
         )
         .map_err(|error| error.to_string())?;
     setup_fts(connection)?;
     Ok(())
+}
+
+#[cfg(not(test))]
+fn setup_database(path: &Path) -> Result<Connection, String> {
+    open_database(path)
+}
+
+#[cfg(test)]
+fn setup_database(path: &Path) -> Result<Connection, String> {
+    initialize_database(path)
 }
 
 fn setup_fts(connection: &Connection) -> Result<(), String> {
@@ -1132,17 +1193,23 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = open_database(&app_data_dir.join("mavo-index.sqlite3"))?;
     let limit = query.limit.unwrap_or(200).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
     let (where_sql, values) = build_asset_where(&query);
-    let total: i64 = connection
-        .query_row(
-            &format!("SELECT COUNT(*) FROM indexed_assets WHERE {where_sql}"),
-            params_from_iter(values.iter()),
-            |row| row.get(0),
+    let total = if query.include_total.unwrap_or(offset == 0) {
+        Some(
+            connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM indexed_assets WHERE {where_sql}"),
+                    params_from_iter(values.iter()),
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())? as u64,
         )
-        .map_err(|error| error.to_string())?;
+    } else {
+        None
+    };
     let order_sql = asset_order_sql(query.sort.as_deref());
     let sql = format!(
         "SELECT rowid, asset_uid, path, name, extension, kind, size_bytes, modified_ms, indexed_at_ms,
@@ -1151,7 +1218,7 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
          FROM indexed_assets WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
     );
     let mut page_values = values;
-    page_values.push(Value::Integer(limit as i64));
+    page_values.push(Value::Integer(limit.saturating_add(1) as i64));
     page_values.push(Value::Integer(offset as i64));
     let mut statement = connection
         .prepare(&sql)
@@ -1191,6 +1258,10 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     let mut rows = rows;
+    let has_more = rows.len() > limit as usize;
+    if has_more {
+        rows.truncate(limit as usize);
+    }
     if !rows.is_empty() {
         let placeholders = vec!["?"; rows.len()].join(",");
         let sql = format!(
@@ -1235,18 +1306,18 @@ fn list_indexed_assets(query: AssetQuery, app: AppHandle) -> Result<AssetPage, S
     let consumed = offset.saturating_add(rows.len() as u32);
     Ok(AssetPage {
         items: rows,
-        next_offset: (consumed < total as u32).then_some(consumed),
-        total: total as u64,
+        next_offset: has_more.then_some(consumed),
+        total,
     })
 }
 
 fn asset_order_sql(sort: Option<&str>) -> &'static str {
     match sort {
-        Some("name") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, name COLLATE NOCASE ASC, path ASC",
-        Some("size") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, size_bytes DESC, path ASC",
-        Some("duration") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, CASE WHEN duration_ms IS NULL THEN 1 ELSE 0 END ASC, duration_ms DESC, path ASC",
-        Some("duplicates") => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, content_hash ASC, size_bytes DESC, path ASC",
-        _ => "CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC, modified_ms DESC, path ASC",
+        Some("name") => "(metadata_status = 'unsupported') ASC, name COLLATE NOCASE ASC, path ASC",
+        Some("size") => "(metadata_status = 'unsupported') ASC, size_bytes DESC, path ASC",
+        Some("duration") => "(metadata_status = 'unsupported') ASC, (duration_ms IS NULL) ASC, duration_ms DESC, path ASC",
+        Some("duplicates") => "(metadata_status = 'unsupported') ASC, content_hash ASC, size_bytes DESC, path ASC",
+        _ => "(metadata_status = 'unsupported') ASC, modified_ms DESC, path ASC",
     }
 }
 
@@ -2281,7 +2352,7 @@ fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
         .header(CONTENT_LENGTH, content_length.to_string())
         .header(ACCEPT_RANGES, "bytes")
         .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(CACHE_CONTROL, "no-store");
+        .header(CACHE_CONTROL, "private, max-age=60");
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(CONTENT_RANGE, format!("bytes {start}-{end}/{file_size}"));
     }
@@ -2777,6 +2848,7 @@ fn process_watched_paths(database_path: &Path, paths: &HashSet<PathBuf>) -> Resu
         roots
     };
     let mut files = Vec::new();
+    let mut missing_paths = Vec::new();
     let mut changed = false;
     for path in paths {
         if path.is_dir() {
@@ -2791,16 +2863,46 @@ fn process_watched_paths(database_path: &Path, paths: &HashSet<PathBuf>) -> Resu
                 changed = true;
             }
         } else {
+            missing_paths.push(path.clone());
+        }
+    }
+    if !missing_paths.is_empty() {
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        for path in missing_paths {
             let raw = path.to_string_lossy().into_owned();
-            let prefix = format!("{}%", raw.trim_end_matches(['\\', '/']));
-            let count = connection
+            let exact_count = transaction
                 .execute(
-                    "UPDATE indexed_assets SET availability = 'missing' WHERE path = ?1 OR path LIKE ?2",
-                    params![raw, prefix],
+                    "UPDATE indexed_assets SET availability = 'missing' WHERE path = ?1",
+                    params![raw],
                 )
                 .map_err(|error| error.to_string())?;
-            changed |= count > 0;
+            if exact_count > 0 {
+                changed = true;
+                continue;
+            }
+
+            // A removed path can no longer be inspected to tell a file from a
+            // directory. Exact file removals use the primary-key lookup above;
+            // only a missing directory needs this indexed subtree range.
+            let directory_key = normalize_directory_key(&path);
+            let mut prefix = directory_key.clone();
+            if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+                prefix.push(std::path::MAIN_SEPARATOR);
+            }
+            let mut upper_bound = prefix.clone();
+            upper_bound.push(char::MAX);
+            let subtree_count = transaction
+                .execute(
+                    "UPDATE indexed_assets SET availability = 'missing'
+                     WHERE directory_key = ?1 OR (directory_key >= ?2 AND directory_key < ?3)",
+                    params![directory_key, prefix, upper_bound],
+                )
+                .map_err(|error| error.to_string())?;
+            changed |= subtree_count > 0;
         }
+        transaction.commit().map_err(|error| error.to_string())?;
     }
     if !files.is_empty() {
         flush_batch(&mut connection, "watcher", &mut files)?;
@@ -2836,16 +2938,22 @@ impl WatchManager {
                 }
                 if process_watched_paths(&database_path, &paths).unwrap_or(false) {
                     let task_id = format!("watcher-preview-{}", now_ms());
-                    let _ = enrich_pending_images(
-                        database_path.clone(),
-                        thumbnail_dir.clone(),
-                        task_id,
-                        Arc::new(ScanCounters::default()),
-                        Instant::now(),
-                        None,
-                        Some(app.clone()),
-                        Some(task_manager.clone()),
-                    );
+                    let enrichment_database = database_path.clone();
+                    let enrichment_thumbnails = thumbnail_dir.clone();
+                    let enrichment_app = app.clone();
+                    let enrichment_manager = task_manager.clone();
+                    thread::spawn(move || {
+                        let _ = enrich_pending_images(
+                            enrichment_database,
+                            enrichment_thumbnails,
+                            task_id,
+                            Arc::new(ScanCounters::default()),
+                            Instant::now(),
+                            None,
+                            Some(enrichment_app),
+                            Some(enrichment_manager),
+                        );
+                    });
                     let _ = app.emit("asset-index-changed", ());
                 }
             }
@@ -2915,7 +3023,10 @@ fn media_thumbnail_path(thumbnail_dir: &Path, path: &str, modified_ms: i64) -> P
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     modified_ms.hash(&mut hasher);
-    thumbnail_dir.join(format!("{:016x}.png", hasher.finish()))
+    let digest = format!("{:016x}", hasher.finish());
+    let shard = thumbnail_dir.join(&digest[..2]);
+    let _ = fs::create_dir_all(&shard);
+    shard.join(format!("{digest}.webp"))
 }
 
 fn media_command(name: &str) -> Command {
@@ -2927,10 +3038,10 @@ fn media_command(name: &str) -> Command {
         };
         let bundled = directory.join(file_name);
         if bundled.is_file() {
-            return windowless_command(bundled);
+            return background_windowless_command(bundled);
         }
     }
-    windowless_command(name)
+    background_windowless_command(name)
 }
 
 fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
@@ -3008,7 +3119,7 @@ fn generate_image_preview(path: &Path, thumbnail_path: &Path) -> Result<(u32, u3
         let dimensions = image.dimensions();
         image
             .thumbnail(480, 320)
-            .save_with_format(thumbnail_path, ImageFormat::Png)
+            .save_with_format(thumbnail_path, ImageFormat::WebP)
             .map_err(|error| error.to_string())?;
         Ok(dimensions)
     }))
@@ -3242,8 +3353,9 @@ fn enrich_pending_audio_loudness(
         let mut statement = connection
             .prepare(
                 "SELECT path, modified_ms, duration_ms FROM indexed_assets
-                 WHERE availability = 'available' AND kind = '音频' AND loudness_status = 'pending'
-                 ORDER BY modified_ms DESC, path ASC",
+                 WHERE availability = 'available' AND kind = '音频'
+                   AND loudness_status = 'pending' AND metadata_status = 'ready'
+                 ORDER BY modified_ms DESC, path ASC LIMIT 64",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -3377,12 +3489,15 @@ fn enrich_pending_images(
     // Preview enrichment may be requested by startup, a completed scan, and the
     // file watcher at nearly the same time. Process one snapshot at a time so
     // workers do not decode the same files or contend over SQLite writes.
-    let _enrichment_guard = task_manager.as_ref().map(|manager| {
-        manager
-            .enrichment_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    });
+    let _enrichment_guard = if let Some(manager) = task_manager.as_ref() {
+        match manager.enrichment_lock.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        }
+    } else {
+        None
+    };
     fs::create_dir_all(&thumbnail_dir).map_err(|error| error.to_string())?;
     let connection = setup_database(&database_path)?;
     let paths = {
@@ -3425,132 +3540,124 @@ fn enrich_pending_images(
         }
     }
 
-    let mut completed = 0;
-    for (index, (path, modified_ms, kind)) in paths.into_iter().enumerate() {
-        thread::sleep(Duration::from_millis(4));
-        let current_item = Path::new(&path)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-        if index == 0 {
-            if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
-                publish_enrichment_tasks(
-                    app,
-                    manager,
-                    &scan_id,
-                    0,
-                    total,
-                    current_item.clone(),
-                    "running",
-                    task_started_at_ms,
-                );
-            }
-        }
+    let mut completed = 0_u64;
+    for batch in paths.chunks(PREVIEW_WORKER_COUNT) {
+        let batch_results = thread::scope(|scope| {
+            let handles = batch
+                .iter()
+                .cloned()
+                .map(|(path, modified_ms, kind)| {
+                    let thumbnail_dir = thumbnail_dir.clone();
+                    scope.spawn(move || {
+                        enter_background_mode();
+                        let thumbnail_path =
+                            media_thumbnail_path(&thumbnail_dir, &path, modified_ms);
+                        let result = if kind == "视频" || kind == "音频" {
+                            catch_unwind(AssertUnwindSafe(|| {
+                                enrich_media_file(Path::new(&path), &kind, &thumbnail_path)
+                            }))
+                            .unwrap_or_else(|payload| {
+                                Err(format!("媒体解码异常：{}", panic_message(payload)))
+                            })
+                            .map(
+                                |(width, height, duration_ms, generated_thumbnail)| {
+                                    (width, height, Some(duration_ms), generated_thumbnail)
+                                },
+                            )
+                        } else {
+                            generate_image_preview(Path::new(&path), &thumbnail_path).map(
+                                |(width, height)| {
+                                    (
+                                        Some(width as i64),
+                                        Some(height as i64),
+                                        None,
+                                        Some(thumbnail_path.to_string_lossy().into_owned()),
+                                    )
+                                },
+                            )
+                        };
+                        (path, modified_ms, result)
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .map_err(|payload| format!("预览工作线程异常：{}", panic_message(payload)))
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })?;
 
-        let item_result = if kind == "视频" || kind == "音频" {
-            let thumbnail_path = media_thumbnail_path(&thumbnail_dir, &path, modified_ms);
-            let enrichment = catch_unwind(AssertUnwindSafe(|| {
-                enrich_media_file(Path::new(&path), &kind, &thumbnail_path)
-            }))
-            .unwrap_or_else(|payload| Err(format!("媒体解码异常：{}", panic_message(payload))));
-            match enrichment {
-                Ok((width, height, duration_ms, generated_thumbnail)) => {
-                    connection
-                        .execute(
-                            "UPDATE indexed_assets SET width = ?1, height = ?2, duration_ms = ?3,
+        for (path, modified_ms, enrichment) in batch_results {
+            let index = completed as usize;
+            let current_item = Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            let item_result = match enrichment {
+                Ok((width, height, duration_ms, generated_thumbnail)) => connection
+                    .execute(
+                        "UPDATE indexed_assets SET width = ?1, height = ?2, duration_ms = ?3,
                          thumbnail_path = ?4, metadata_status = 'ready', metadata_error = NULL
                          WHERE path = ?5 AND modified_ms = ?6",
-                            params![
-                                width,
-                                height,
-                                duration_ms,
-                                generated_thumbnail,
-                                path,
-                                modified_ms
-                            ],
-                        )
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                }
-                Err(error) => {
-                    connection
-                        .execute(
-                            "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1 WHERE path = ?2",
-                            params![error, path],
-                        )
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                }
-            }
-        } else {
-            let thumbnail_path = media_thumbnail_path(&thumbnail_dir, &path, modified_ms);
-            match generate_image_preview(Path::new(&path), &thumbnail_path) {
-                Ok((width, height)) => connection
-                    .execute(
-                        "UPDATE indexed_assets SET width = ?1, height = ?2,
-                         thumbnail_path = ?3, metadata_status = 'ready', metadata_error = NULL
-                         WHERE path = ?4 AND modified_ms = ?5",
-                        params![
-                            width as i64,
-                            height as i64,
-                            thumbnail_path.to_string_lossy().into_owned(),
-                            path,
-                            modified_ms,
-                        ],
+                        params![width, height, duration_ms, generated_thumbnail, path, modified_ms],
                     )
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
                 Err(error) => connection
                     .execute(
-                        "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1 WHERE path = ?2",
-                        params![error, path],
+                        "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1
+                         WHERE path = ?2 AND modified_ms = ?3",
+                        params![error, path, modified_ms],
                     )
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
-            }
-        };
+            };
 
-        if let Err(error) = item_result {
-            if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
-                publish_enrichment_tasks(
-                    app,
-                    manager,
-                    &scan_id,
-                    completed,
-                    total,
-                    Some(format!("处理失败：{error}")),
-                    "failed",
-                    task_started_at_ms,
-                );
+            if let Err(error) = item_result {
+                if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+                    publish_enrichment_tasks(
+                        app,
+                        manager,
+                        &scan_id,
+                        completed,
+                        total,
+                        Some(format!("处理失败：{error}")),
+                        "failed",
+                        task_started_at_ms,
+                    );
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-        completed = (index + 1) as u64;
-        if index % PREVIEW_REFRESH_INTERVAL == PREVIEW_REFRESH_INTERVAL - 1 {
-            if let Some(channel) = on_event.as_ref() {
-                let _ = channel.send(ScanEvent::new(
-                    "assetsCommitted",
-                    &scan_id,
-                    &counters,
-                    started,
-                ));
+            completed += 1;
+            if index % PREVIEW_REFRESH_INTERVAL == PREVIEW_REFRESH_INTERVAL - 1 {
+                if let Some(channel) = on_event.as_ref() {
+                    let _ = channel.send(ScanEvent::new(
+                        "assetsCommitted",
+                        &scan_id,
+                        &counters,
+                        started,
+                    ));
+                }
             }
-        }
-        if completed == 1 || completed % 4 == 0 || completed == total {
-            if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
-                publish_enrichment_tasks(
-                    app,
-                    manager,
-                    &scan_id,
-                    completed,
-                    total,
-                    current_item,
-                    if completed == total {
-                        "completed"
-                    } else {
-                        "running"
-                    },
-                    task_started_at_ms,
-                );
+            if completed == 1 || completed % 8 == 0 || completed == total {
+                if let (Some(app), Some(manager)) = (app.as_ref(), task_manager.as_ref()) {
+                    publish_enrichment_tasks(
+                        app,
+                        manager,
+                        &scan_id,
+                        completed,
+                        total,
+                        current_item,
+                        if completed == total {
+                            "completed"
+                        } else {
+                            "running"
+                        },
+                        task_started_at_ms,
+                    );
+                }
             }
         }
     }
@@ -4036,7 +4143,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol("mavo-media", |context, request, responder| {
             let app = context.app_handle().clone();
-            thread::spawn(move || responder.respond(media_stream_response(&app, &request)));
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(media_stream_response(&app, &request));
+            });
         })
         .manage(ScanManager::default())
         .manage(BackgroundTaskManager::default())
@@ -4057,7 +4166,7 @@ pub fn run() {
             fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("mavo-index.sqlite3");
             let thumbnail_dir = app_data_dir.join("thumbnails");
-            setup_database(&database_path).map_err(std::io::Error::other)?;
+            initialize_database(&database_path).map_err(std::io::Error::other)?;
             let watch_manager = app.state::<WatchManager>();
             let task_manager = app.state::<BackgroundTaskManager>().inner().clone();
             watch_manager

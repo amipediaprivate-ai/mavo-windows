@@ -79,29 +79,6 @@ const categoryKinds: Partial<Record<string, AssetKind>> = {
 };
 
 const ASSET_PAGE_SIZE = 200;
-const ASSET_REFRESH_CHUNK_SIZE = 500;
-
-async function loadIndexedAssetWindow(options: LoadIndexedAssetsOptions, targetCount: number) {
-  const items = [] as Awaited<ReturnType<typeof loadIndexedAssets>>["items"];
-  let nextOffset: number | undefined = 0;
-  let total = 0;
-
-  while (nextOffset !== undefined && items.length < targetCount) {
-    const requestedOffset: number = nextOffset;
-    const page = await loadIndexedAssets({
-      ...options,
-      offset: requestedOffset,
-      limit: Math.min(ASSET_REFRESH_CHUNK_SIZE, targetCount - items.length),
-    });
-    items.push(...page.items);
-    total = page.total;
-    nextOffset = page.items.length === 0 || page.nextOffset === requestedOffset
-      ? undefined
-      : page.nextOffset;
-  }
-
-  return { items, nextOffset, total };
-}
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<"资产" | "工具">("资产");
@@ -135,8 +112,8 @@ export default function App() {
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
   const assetPageLoadActive = useRef(false);
+  const loadedAssetIds = useRef<Set<string>>(new Set(initialAssets.map((asset) => asset.id)));
   const indexedModeRef = useRef(indexedMode);
-  const libraryAssetCountRef = useRef(libraryAssets.length);
   const indexedQueryOptionsRef = useRef<LoadIndexedAssetsOptions>({});
   const lastSelectedId = useRef<string | undefined>(undefined);
 
@@ -179,21 +156,23 @@ export default function App() {
     duplicateOnly: activeModule === "重复文件",
   }), [activeModule, effectiveFilters, query, sort]);
   indexedModeRef.current = indexedMode;
-  libraryAssetCountRef.current = libraryAssets.length;
   indexedQueryOptionsRef.current = indexedQueryOptions;
 
-  const refreshIndexedAssets = async (forceIndexedMode = false, preserveLoadedWindow = false) => {
+  const refreshIndexedAssets = async (forceIndexedMode = false) => {
     const requestId = ++assetRequest.current;
     try {
-      const targetCount = preserveLoadedWindow && indexedModeRef.current
-        ? Math.max(ASSET_PAGE_SIZE, libraryAssetCountRef.current)
-        : ASSET_PAGE_SIZE;
-      const page = await loadIndexedAssetWindow(indexedQueryOptionsRef.current, targetCount);
+      const page = await loadIndexedAssets({
+        ...indexedQueryOptionsRef.current,
+        offset: 0,
+        limit: ASSET_PAGE_SIZE,
+        includeTotal: true,
+      });
       if (requestId !== assetRequest.current) return;
-      if (page.total > 0 || forceIndexedMode || indexedModeRef.current) {
+      if ((page.total ?? 0) > 0 || forceIndexedMode || indexedModeRef.current) {
         setIndexedMode(true);
         setLibraryAssets(page.items);
-        setIndexedTotal(page.total);
+        loadedAssetIds.current = new Set(page.items.map((asset) => asset.id));
+        if (page.total !== undefined) setIndexedTotal(page.total);
         setNextOffset(page.nextOffset);
       }
     } catch {
@@ -227,8 +206,8 @@ export default function App() {
           return [...byId.values()].sort((left, right) => right.updatedAtMs - left.updatedAtMs).slice(0, 24);
         });
       }).catch(() => undefined);
-      void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1))
-        .then(() => refreshIndexedAssets(true, true))
+      void enrichPendingPreviews(() => undefined)
+        .then(() => setIndexRevision((revision) => revision + 1))
         .catch(() => undefined);
     }).catch(() => undefined);
     // The first load deliberately uses the initial query state only.
@@ -313,7 +292,7 @@ export default function App() {
 
   useEffect(() => {
     if (indexRevision === 0) return;
-    const timer = window.setTimeout(() => void refreshIndexedAssets(true, true), 360);
+    const timer = window.setTimeout(() => void refreshIndexedAssets(true), 500);
     return () => window.clearTimeout(timer);
     // Coalesce the scan writer and thumbnail worker's frequent commit notifications.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -326,13 +305,17 @@ export default function App() {
     const offset = nextOffset;
     const requestId = assetRequest.current;
     try {
-      const page = await loadIndexedAssets({ ...indexedQueryOptions, offset, limit: ASSET_PAGE_SIZE });
+      const page = await loadIndexedAssets({ ...indexedQueryOptions, offset, limit: ASSET_PAGE_SIZE, includeTotal: false });
       if (requestId !== assetRequest.current) return;
-      setLibraryAssets((current) => {
-        const existing = new Set(current.map((asset) => asset.id));
-        return [...current, ...page.items.filter((asset) => !existing.has(asset.id))];
+      const uniqueItems = page.items.filter((asset) => {
+        if (loadedAssetIds.current.has(asset.id)) return false;
+        loadedAssetIds.current.add(asset.id);
+        return true;
       });
-      setIndexedTotal(page.total);
+      setLibraryAssets((current) => {
+        return [...current, ...uniqueItems];
+      });
+      if (page.total !== undefined) setIndexedTotal(page.total);
       setNextOffset(page.nextOffset);
     } catch (error) {
       if (requestId === assetRequest.current) {
@@ -598,7 +581,9 @@ export default function App() {
     try {
       await relinkIndexedAsset(asset, selected);
       setIndexRevision((revision) => revision + 1);
-      void enrichPendingPreviews(() => setIndexRevision((revision) => revision + 1)).catch(() => undefined);
+      void enrichPendingPreviews(() => undefined)
+        .then(() => setIndexRevision((revision) => revision + 1))
+        .catch(() => undefined);
       showToast("文件已重新定位");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "无法重新定位文件");
@@ -805,7 +790,6 @@ export default function App() {
           key={scanScope}
           scope={scanScope}
           onClose={() => setScanScope(null)}
-          onAssetsCommitted={() => setIndexRevision((revision) => revision + 1)}
           onFinished={(matchedCount) => {
             setIndexRevision((revision) => revision + 1);
             showToast(`扫描完成，已索引 ${matchedCount.toLocaleString("zh-CN")} 个资源`);

@@ -28,12 +28,13 @@ export interface IndexedAssetRecord {
 export interface IndexedAssetPage {
   items: IndexedAssetRecord[];
   nextOffset?: number;
-  total: number;
+  total?: number;
 }
 
 export interface LoadIndexedAssetsOptions {
   offset?: number;
   limit?: number;
+  includeTotal?: boolean;
   query?: string;
   filters?: Filters;
   sort?: string;
@@ -44,6 +45,7 @@ export interface LoadIndexedAssetsOptions {
 export interface AssetQuerySpec {
   offset?: number;
   limit?: number;
+  includeTotal?: boolean;
   query?: string;
   kinds?: string[];
   extensions?: string[];
@@ -231,6 +233,7 @@ export function buildAssetQuery(options: LoadIndexedAssetsOptions = {}): AssetQu
   return {
     offset: options.offset ?? 0,
     limit: options.limit ?? 200,
+    includeTotal: options.includeTotal ?? (options.offset ?? 0) === 0,
     query: options.query?.trim() || undefined,
     kinds: options.filters?.kind.length ? options.filters.kind : undefined,
     extensions: options.filters?.format.length ? options.filters.format : undefined,

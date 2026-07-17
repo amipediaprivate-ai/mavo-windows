@@ -148,30 +148,23 @@ function AssetVirtualGridComponent({
   const getScrollElement = useCallback(() => scrollRef.current, []);
   const assetsRef = useRef(assets);
   assetsRef.current = assets;
-
-  const itemKeys = useMemo(() => Array.from({ length: virtualCount }, (_, index) => {
-    if (masonry) {
-      const asset = assets[index];
-      return asset ? `${asset.id}:${assetAspectRatio(asset)}` : `${view}-${index}`;
-    }
-    const rowAssets = assets.slice(index * columns, (index + 1) * columns);
-    return rowAssets.length
-      ? `${view}:${rowAssets.map((asset) => `${asset.id}:${asset.kind}`).join("|")}`
-      : `${view}-row-${index}`;
-  }), [assets, columns, masonry, view, virtualCount]);
-  const itemKeySignature = useMemo(() => itemKeys.join("\u001f"), [itemKeys]);
-  const itemKeysRef = useRef(itemKeys);
-  itemKeysRef.current = itemKeys;
+  const assetBoundaryKey = `${assets.length}:${assets[0]?.id ?? ""}:${assets.at(-1)?.id ?? ""}`;
 
   const estimateSize = useCallback((index: number) => masonry
     ? masonryCardHeight(assetsRef.current[index], columnWidth)
     : view === "list"
       ? listRowHeight(assetsRef.current[index])
-      : rowHeight, [columnWidth, itemKeySignature, masonry, rowHeight, view]);
-  const getItemKey = useCallback(
-    (index: number) => itemKeysRef.current[index] ?? `${itemKeySignature}:${index}`,
-    [itemKeySignature],
-  );
+      : rowHeight, [assetBoundaryKey, columnWidth, masonry, rowHeight, view]);
+  const getItemKey = useCallback((index: number) => {
+    if (masonry) {
+      const asset = assetsRef.current[index];
+      return asset ? `${asset.id}:${assetAspectRatio(asset)}` : `${view}-${index}`;
+    }
+    const start = index * columns;
+    const first = assetsRef.current[start];
+    const last = assetsRef.current[Math.min(start + columns - 1, assetsRef.current.length - 1)];
+    return first ? `${view}:${first.id}:${last?.id ?? first.id}` : `${view}-row-${index}`;
+  }, [assetBoundaryKey, columns, masonry, view]);
 
   const virtualizer = useVirtualizer({
     count: virtualCount,
