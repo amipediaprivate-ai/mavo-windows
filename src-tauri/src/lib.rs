@@ -445,6 +445,28 @@ fn asset_kind(extension: &str) -> &'static str {
     }
 }
 
+fn supports_metadata_enrichment(extension: &str) -> bool {
+    matches!(asset_kind(extension), "图片" | "动图" | "视频" | "音频") || extension == "psd"
+}
+
+fn initial_metadata_status(extension: &str) -> &'static str {
+    if supports_metadata_enrichment(extension) {
+        "pending"
+    } else {
+        // These formats have no media dimensions/duration pipeline. Treat them as
+        // fully indexed instead of leaving a queue item that can never be claimed.
+        "ready"
+    }
+}
+
+fn initial_loudness_status(extension: &str) -> &'static str {
+    if asset_kind(extension) == "音频" {
+        "pending"
+    } else {
+        "unsupported"
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -862,6 +884,52 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
             .execute_batch("COMMIT")
             .map_err(|error| error.to_string())?;
     }
+    let analysis_statuses_normalized: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'analysis_statuses_normalized_v1')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !analysis_statuses_normalized {
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| error.to_string())?;
+        let normalization = (|| -> Result<(), String> {
+            connection
+                .execute(
+                    "UPDATE indexed_assets SET metadata_status = 'ready', metadata_error = NULL
+                     WHERE metadata_status = 'pending'
+                       AND NOT (kind IN ('图片', '动图', '视频', '音频') OR extension = 'psd')",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "UPDATE indexed_assets SET loudness_status = 'unsupported', loudness_error = NULL
+                     WHERE loudness_status = 'pending'
+                       AND (kind != '音频' OR metadata_status = 'unsupported')",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "INSERT INTO app_metadata (key, value)
+                     VALUES ('analysis_statuses_normalized_v1', '1')
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = normalization {
+            let _ = connection.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        connection
+            .execute_batch("COMMIT")
+            .map_err(|error| error.to_string())?;
+    }
     let directories_backfilled: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'asset_directories_backfilled_v1')",
@@ -1055,8 +1123,8 @@ fn flush_batch(
             .prepare_cached(
                 "INSERT INTO indexed_assets
                  (path, name, extension, size_bytes, modified_ms, scan_root, last_scan_id, indexed_at_ms,
-                  kind, directory_path, directory_key, availability)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'available')
+                  kind, directory_path, directory_key, availability, metadata_status, loudness_status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'available', ?12, ?13)
                  ON CONFLICT(path) DO UPDATE SET
                    name = excluded.name,
                    extension = excluded.extension,
@@ -1067,13 +1135,13 @@ fn flush_batch(
                    duration_ms = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.duration_ms END,
                    content_hash = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.content_hash END,
                    hash_modified_ms = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.hash_modified_ms END,
-                   metadata_status = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN 'pending' ELSE indexed_assets.metadata_status END,
+                   metadata_status = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN excluded.metadata_status ELSE indexed_assets.metadata_status END,
                    metadata_error = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.metadata_error END,
                    integrated_lufs = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.integrated_lufs END,
                    true_peak_dbtp = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.true_peak_dbtp END,
                    loudness_range_lu = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.loudness_range_lu END,
                    loudness_threshold_lufs = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.loudness_threshold_lufs END,
-                   loudness_status = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN 'pending' ELSE indexed_assets.loudness_status END,
+                   loudness_status = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN excluded.loudness_status ELSE indexed_assets.loudness_status END,
                    loudness_error = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.loudness_error END,
                    modified_ms = excluded.modified_ms,
                    scan_root = excluded.scan_root,
@@ -1087,6 +1155,8 @@ fn flush_batch(
             .map_err(|error| error.to_string())?;
         let indexed_at = now_ms();
         for file in batch.drain(..) {
+            let metadata_status = initial_metadata_status(&file.extension);
+            let loudness_status = initial_loudness_status(&file.extension);
             statement
                 .execute(params![
                     file.path,
@@ -1100,6 +1170,8 @@ fn flush_batch(
                     file.kind,
                     file.directory_path,
                     file.directory_key,
+                    metadata_status,
+                    loudness_status,
                 ])
                 .map_err(|error| error.to_string())?;
         }
@@ -2686,18 +2758,34 @@ fn relink_asset(
         .map_err(|error| error.to_string())?;
     let database_path = app_data_dir.join("mavo-index.sqlite3");
     let connection = setup_database(&database_path)?;
-    connection.execute(
-        "UPDATE indexed_assets SET path = ?1, name = ?2, extension = ?3, kind = ?4,
+    let metadata_status = initial_metadata_status(&extension);
+    let loudness_status = initial_loudness_status(&extension);
+    connection
+        .execute(
+            "UPDATE indexed_assets SET path = ?1, name = ?2, extension = ?3, kind = ?4,
          size_bytes = ?5, modified_ms = ?6, scan_root = ?7, directory_path = ?7,
          directory_key = ?8, availability = 'available',
          width = NULL, height = NULL, duration_ms = NULL, thumbnail_path = NULL,
-         metadata_status = 'pending', metadata_error = NULL, content_hash = NULL, hash_modified_ms = NULL,
+         metadata_status = ?9, metadata_error = NULL, content_hash = NULL, hash_modified_ms = NULL,
          integrated_lufs = NULL, true_peak_dbtp = NULL, loudness_range_lu = NULL,
-         loudness_threshold_lufs = NULL, loudness_status = 'pending', loudness_error = NULL,
+         loudness_threshold_lufs = NULL, loudness_status = ?10, loudness_error = NULL,
          loudness_version = 1
-         WHERE rowid = ?9",
-        params![path.to_string_lossy().into_owned(), name, extension, asset_kind(&extension), metadata.len() as i64, modified_ms, folder, directory_key, asset_id],
-    ).map_err(|error| error.to_string())?;
+         WHERE rowid = ?11",
+            params![
+                path.to_string_lossy().into_owned(),
+                name,
+                extension,
+                asset_kind(&extension),
+                metadata.len() as i64,
+                modified_ms,
+                folder,
+                directory_key,
+                metadata_status,
+                loudness_status,
+                asset_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
     register_scan_roots(&database_path, &[PathBuf::from(folder)])?;
     let _ = watch_manager.watch_root(path.parent().unwrap_or(Path::new("")));
     Ok(())
@@ -3749,7 +3837,9 @@ fn enrich_pending_images(
                     .map_err(|error| error.to_string()),
                 Err(error) => transaction
                     .execute(
-                        "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1
+                        "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1,
+                         loudness_status = CASE WHEN kind = '音频' THEN 'unsupported' ELSE loudness_status END,
+                         loudness_error = CASE WHEN kind = '音频' THEN ?1 ELSE loudness_error END
                          WHERE path = ?2 AND modified_ms = ?3",
                         params![error, path, modified_ms],
                     )
@@ -4487,6 +4577,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kind, "视频");
+        drop(connection);
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn analysis_statuses_only_queue_supported_work() {
+        for extension in ["png", "gif", "mp4", "wav", "psd"] {
+            assert_eq!(initial_metadata_status(extension), "pending", "{extension}");
+        }
+        for extension in ["svg", "woff2", "pdf", "obj", "ai"] {
+            assert_eq!(initial_metadata_status(extension), "ready", "{extension}");
+        }
+        assert_eq!(initial_loudness_status("wav"), "pending");
+        assert_eq!(initial_loudness_status("mp4"), "unsupported");
+        assert_eq!(initial_loudness_status("woff2"), "unsupported");
+    }
+
+    #[test]
+    fn analysis_status_migration_clears_unclaimable_pending_rows() {
+        let workspace = test_workspace("analysis-status-migration");
+        fs::create_dir_all(&workspace).unwrap();
+        let database = workspace.join("index.sqlite3");
+        let connection = setup_database(&database).unwrap();
+        for (name, extension) in [("icon.svg", "svg"), ("cover.png", "png")] {
+            connection
+                .execute(
+                    "INSERT INTO indexed_assets
+                     (path, name, extension, size_bytes, modified_ms, scan_root, last_scan_id,
+                      indexed_at_ms, kind)
+                     VALUES (?1, ?2, ?3, 1, 1, 'C:\\', 'scan', 1, ?4)",
+                    params![format!("C:/{name}"), name, extension, asset_kind(extension)],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "DELETE FROM app_metadata WHERE key = 'analysis_statuses_normalized_v1'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let connection = setup_database(&database).unwrap();
+        let svg_statuses: (String, String) = connection
+            .query_row(
+                "SELECT metadata_status, loudness_status FROM indexed_assets WHERE extension = 'svg'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let png_statuses: (String, String) = connection
+            .query_row(
+                "SELECT metadata_status, loudness_status FROM indexed_assets WHERE extension = 'png'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            svg_statuses,
+            ("ready".to_string(), "unsupported".to_string())
+        );
+        assert_eq!(
+            png_statuses,
+            ("pending".to_string(), "unsupported".to_string())
+        );
+
         drop(connection);
         fs::remove_dir_all(workspace).unwrap();
     }
