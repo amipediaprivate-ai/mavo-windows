@@ -3,14 +3,17 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { AudioPlayerProvider } from "./audio/AudioPlayerContext";
 import { AnimatedImageProvider } from "./animation/AnimatedImageContext";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AudioPlayerProvider>
-      <AnimatedImageProvider>
-        <App />
-      </AnimatedImageProvider>
-    </AudioPlayerProvider>
+    <AppErrorBoundary>
+      <AudioPlayerProvider>
+        <AnimatedImageProvider>
+          <App />
+        </AnimatedImageProvider>
+      </AudioPlayerProvider>
+    </AppErrorBoundary>
   </StrictMode>,
 );

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Clock3, FolderOpen } from "lucide-react";
 import type { Asset, AssetView } from "../types";
@@ -28,13 +28,14 @@ const MASONRY_CARD_BODY_HEIGHT = 58;
 const LIST_ROW_HEIGHT = 72;
 const AUDIO_LIST_ROW_HEIGHT = 192;
 
-function listRowHeight(asset: Asset) {
+function listRowHeight(asset?: Asset) {
+  if (!asset) return LIST_ROW_HEIGHT;
   return asset.kind === "音频" ? AUDIO_LIST_ROW_HEIGHT : LIST_ROW_HEIGHT;
 }
 
-function masonryCardHeight(asset: Asset, columnWidth: number) {
+function masonryCardHeight(asset: Asset | undefined, columnWidth: number) {
   const contentWidth = Math.max(1, columnWidth - 2);
-  return Math.round(contentWidth / assetAspectRatio(asset) + MASONRY_CARD_BODY_HEIGHT + 2);
+  return Math.round(contentWidth / (asset ? assetAspectRatio(asset) : GRID_ASPECT_RATIO) + MASONRY_CARD_BODY_HEIGHT + 2);
 }
 
 function AssetCard({
@@ -151,6 +152,7 @@ function AssetVirtualGridComponent({
   const assetsRef = useRef(assets);
   assetsRef.current = assets;
   const assetBoundaryKey = `${assets.length}:${assets[0]?.id ?? ""}:${assets.at(-1)?.id ?? ""}`;
+  const previousDatasetRef = useRef({ length: assets.length, firstId: assets[0]?.id, view });
 
   const estimateSize = useCallback((index: number) => masonry
     ? masonryCardHeight(assetsRef.current[index], columnWidth)
@@ -184,6 +186,18 @@ function AssetVirtualGridComponent({
     virtualizer.measure();
   }, [cardWidth, columns, view, virtualizer]);
 
+  useLayoutEffect(() => {
+    const previous = previousDatasetRef.current;
+    const firstId = assets[0]?.id;
+    const datasetReplaced = previous.firstId !== firstId
+      || assets.length < previous.length
+      || previous.view !== view;
+    previousDatasetRef.current = { length: assets.length, firstId, view };
+    if (datasetReplaced && scrollRef.current && scrollRef.current.scrollTop > 0) {
+      virtualizer.scrollToOffset(0);
+    }
+  }, [assetBoundaryKey, assets, view, virtualizer]);
+
   useEffect(() => {
     if (!followAssetId) return;
     const assetIndex = assets.findIndex((asset) => asset.id === followAssetId);
@@ -191,7 +205,11 @@ function AssetVirtualGridComponent({
     virtualizer.scrollToIndex(masonry ? assetIndex : Math.floor(assetIndex / columns), { align: "center" });
   }, [assets, columns, followAssetId, masonry, virtualizer]);
 
-  const virtualRows = virtualizer.getVirtualItems();
+  // During a count change the virtualizer can publish its previous range for
+  // one render. Never let an obsolete index escape into an AssetCard.
+  const virtualRows = virtualizer.getVirtualItems().filter((item) => (
+    item && item.index >= 0 && item.index < virtualCount
+  ));
   const lastVirtualIndex = virtualRows.reduce((last, item) => Math.max(last, item.index), -1);
   useEffect(() => {
     if (hasMore && !loading && lastVirtualIndex >= virtualCount - 3) {
@@ -222,6 +240,7 @@ function AssetVirtualGridComponent({
         <div className="virtual-canvas" style={{ height: virtualizer.getTotalSize() }}>
           {masonry ? virtualRows.map((virtualItem) => {
             const asset = assets[virtualItem.index];
+            if (!asset) return null;
             return (
               <div
                 className="masonry-item"
