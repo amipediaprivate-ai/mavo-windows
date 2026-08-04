@@ -40,6 +40,7 @@ use tauri::{
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 static MEDIA_TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
 static MEDIA_ENRICHMENT_LOCK: Mutex<()> = Mutex::new(());
+static AUDIO_PLAYBACK_TRANSCODE_LOCK: Mutex<()> = Mutex::new(());
 
 fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -2303,25 +2304,142 @@ fn indexed_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String>
     Ok(path)
 }
 
-fn indexed_media_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String> {
+fn indexed_media_asset(asset_id: i64, app: &AppHandle) -> Result<(PathBuf, String), String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
-    let path: String = connection
+    let (path, kind): (String, String) = connection
         .query_row(
-            "SELECT path FROM indexed_assets
+            "SELECT path, kind FROM indexed_assets
              WHERE rowid = ?1 AND kind IN ('音频', '视频') AND availability = 'available'",
             params![asset_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| "媒体资源不存在或已不可用".to_string())?;
     let path = PathBuf::from(path);
     if !path.is_file() {
         return Err("原始媒体文件不存在或无法访问".to_string());
     }
-    Ok(path)
+    Ok((path, kind))
+}
+
+fn playback_media_command(name: &str) -> Command {
+    if let Some(directory) = MEDIA_TOOL_DIR.get() {
+        let file_name = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        let bundled = directory.join(file_name);
+        if bundled.is_file() {
+            return windowless_command(bundled);
+        }
+    }
+    windowless_command(name)
+}
+
+fn audio_playback_cache_path(
+    source_path: &Path,
+    cache_dir: &Path,
+    asset_id: i64,
+) -> Result<PathBuf, String> {
+    let metadata = source_path.metadata().map_err(|error| error.to_string())?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Ok(cache_dir.join(format!(
+        "indexed-{asset_id}-{}-{modified_ns}.mp3",
+        metadata.len()
+    )))
+}
+
+fn transcode_audio_for_playback(
+    source_path: &Path,
+    cache_dir: &Path,
+    asset_id: i64,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(cache_dir).map_err(|error| error.to_string())?;
+    let cache_path = audio_playback_cache_path(source_path, cache_dir, asset_id)?;
+    if cache_path
+        .metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+    {
+        return Ok(cache_path);
+    }
+
+    let _guard = AUDIO_PLAYBACK_TRANSCODE_LOCK
+        .lock()
+        .map_err(|_| "音频播放转换器不可用".to_string())?;
+    if cache_path
+        .metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+    {
+        return Ok(cache_path);
+    }
+    if cache_path.is_file() {
+        fs::remove_file(&cache_path).map_err(|error| error.to_string())?;
+    }
+
+    let temporary_path = cache_dir.join(format!(
+        ".{}.{}.part",
+        cache_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("audio-playback.mp3"),
+        std::process::id()
+    ));
+    let mut command = playback_media_command("ffmpeg");
+    command
+        .args(["-hide_banner", "-nostdin", "-v", "error", "-y", "-i"])
+        .arg(source_path)
+        .args([
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-ac",
+            "2",
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "4",
+            "-f",
+            "mp3",
+        ])
+        .arg(&temporary_path);
+    let output = match command_output_with_timeout(&mut command, Duration::from_secs(300)) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(format!("音频播放转换失败：{error}"));
+        }
+    };
+    if !output.status.success() {
+        let _ = fs::remove_file(&temporary_path);
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("音频无法解码：{}", detail.trim()));
+    }
+    if temporary_path
+        .metadata()
+        .map(|metadata| metadata.len() == 0)
+        .unwrap_or(true)
+    {
+        let _ = fs::remove_file(&temporary_path);
+        return Err("音频播放转换没有生成有效内容".to_string());
+    }
+    fs::rename(&temporary_path, &cache_path).map_err(|error| {
+        let _ = fs::remove_file(&temporary_path);
+        format!("无法保存音频播放缓存：{error}")
+    })?;
+    Ok(cache_path)
 }
 
 fn parse_media_byte_range(value: &str, file_size: u64) -> Result<Option<(u64, u64)>, ()> {
@@ -2434,9 +2552,33 @@ fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
     let Some(asset_id) = asset_id else {
         return media_error_response(StatusCode::BAD_REQUEST, "无效的媒体资源 ID", None);
     };
-    let path = match indexed_media_asset_path(asset_id, app) {
-        Ok(path) => path,
+    let (source_path, kind) = match indexed_media_asset(asset_id, app) {
+        Ok(asset) => asset,
         Err(error) => return media_error_response(StatusCode::NOT_FOUND, &error, None),
+    };
+    let path = if kind == "音频" {
+        let app_data_dir = match app.path().app_data_dir() {
+            Ok(path) => path,
+            Err(error) => {
+                return media_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &error.to_string(),
+                    None,
+                )
+            }
+        };
+        match transcode_audio_for_playback(
+            &source_path,
+            &app_data_dir.join("audio-playback-cache"),
+            asset_id,
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                return media_error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &error, None)
+            }
+        }
+    } else {
+        source_path
     };
     let file_size = match path.metadata() {
         Ok(metadata) => metadata.len(),
@@ -5233,6 +5375,65 @@ mod tests {
         let loudness = analyze_audio_loudness(&audio, duration_ms).unwrap();
         assert!(loudness.integrated_lufs.is_some());
         assert!(loudness.true_peak_dbtp.is_some());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn bundled_ffmpeg_transcodes_aiff_for_webview_playback() {
+        let media_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("ffmpeg");
+        if !media_dir.join("ffmpeg.exe").is_file() || !media_dir.join("ffprobe.exe").is_file() {
+            return;
+        }
+        let _ = MEDIA_TOOL_DIR.set(media_dir);
+        let workspace = test_workspace("audio-playback-transcode");
+        let cache_dir = workspace.join("cache");
+        fs::create_dir_all(&workspace).unwrap();
+        let audio = workspace.join("tone.aiff");
+        let generated = media_command("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.3",
+                "-c:a",
+                "pcm_s24be",
+            ])
+            .arg(&audio)
+            .status()
+            .unwrap();
+        assert!(generated.success());
+
+        let playback = transcode_audio_for_playback(&audio, &cache_dir, 42).unwrap();
+        assert_eq!(
+            playback.extension().and_then(|value| value.to_str()),
+            Some("mp3")
+        );
+        assert!(playback.metadata().unwrap().len() > 0);
+        assert_eq!(
+            transcode_audio_for_playback(&audio, &cache_dir, 42).unwrap(),
+            playback
+        );
+        let probed = media_command("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(&playback)
+            .output()
+            .unwrap();
+        assert!(probed.status.success());
+        assert_eq!(String::from_utf8_lossy(&probed.stdout).trim(), "mp3");
         fs::remove_dir_all(workspace).unwrap();
     }
 }
