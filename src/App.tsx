@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useAudioSequence } from "./audio/AudioPlayerContext";
 import { AppHeader } from "./components/AppHeader";
-import { AssetVirtualGrid } from "./components/AssetVirtualGrid";
+import { AssetPagedGrid } from "./components/AssetVirtualGrid";
 import { AssetPreviewDialog } from "./components/AssetPreviewDialog";
 import { BatchTagToolbar } from "./components/BatchTagToolbar";
 import { DetailPanel } from "./components/DetailPanel";
@@ -85,7 +85,13 @@ const categoryKinds: Partial<Record<string, AssetKind>> = {
   视频: "视频",
 };
 
-const ASSET_PAGE_SIZE = 200;
+const ASSET_PAGE_SIZE = 60;
+
+const initialAssetPages: Record<AssetView, number> = {
+  grid: 0,
+  masonry: 0,
+  list: 0,
+};
 
 interface AudioSequenceCursor {
   indexed: boolean;
@@ -113,7 +119,7 @@ export default function App() {
   const [scanScope, setScanScope] = useState<ScanScope | null>(null);
   const [indexedMode, setIndexedMode] = useState(false);
   const [indexedTotal, setIndexedTotal] = useState(0);
-  const [nextOffset, setNextOffset] = useState<number | undefined>();
+  const [assetPages, setAssetPages] = useState(initialAssetPages);
   const [loadingAssets, setLoadingAssets] = useState(false);
   const [indexRevision, setIndexRevision] = useState(0);
   const [previewAssetId, setPreviewAssetId] = useState<string>();
@@ -127,11 +133,12 @@ export default function App() {
   const [tagCatalog, setTagCatalog] = useState<TagCatalog>({ groups: [], tags: [] });
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
-  const assetPageLoadActive = useRef(false);
-  const loadedAssetIds = useRef<Set<string>>(new Set(initialAssets.map((asset) => asset.id)));
   const indexedModeRef = useRef(indexedMode);
   const indexedQueryOptionsRef = useRef<LoadIndexedAssetsOptions>({});
+  const activeAssetPageRef = useRef(0);
+  const successfulAssetPagesRef = useRef(initialAssetPages);
   const lastSelectedId = useRef<string | undefined>(undefined);
+  const selectedAssetCache = useRef(new Map(initialAssets.map((asset) => [asset.id, asset])));
   const filteredAssetsRef = useRef<Asset[]>(initialAssets);
   const audioSequenceCursorRef = useRef<AudioSequenceCursor | undefined>(undefined);
 
@@ -200,26 +207,46 @@ export default function App() {
     task.status === "running" && ["analysis", "thumbnail", "loudness"].includes(task.taskType));
   indexedModeRef.current = indexedMode;
   indexedQueryOptionsRef.current = indexedQueryOptions;
+  const activeAssetPage = assetPages[view];
+  activeAssetPageRef.current = activeAssetPage;
+  const assetPageCount = indexedMode ? Math.max(1, Math.ceil(indexedTotal / ASSET_PAGE_SIZE)) : 1;
+  const assetBrowseKey = useMemo(() => JSON.stringify(indexedQueryOptions), [indexedQueryOptions]);
 
-  const refreshIndexedAssets = async (forceIndexedMode = false) => {
+  const refreshIndexedAssets = async (forceIndexedMode = false, requestedPage = activeAssetPageRef.current) => {
     const requestId = ++assetRequest.current;
+    setLoadingAssets(true);
     try {
       const page = await loadIndexedAssets({
         ...indexedQueryOptionsRef.current,
-        offset: 0,
+        offset: requestedPage * ASSET_PAGE_SIZE,
         limit: ASSET_PAGE_SIZE,
         includeTotal: true,
       });
       if (requestId !== assetRequest.current) return;
       if ((page.total ?? 0) > 0 || forceIndexedMode || indexedModeRef.current) {
+        const total = page.total ?? 0;
+        const lastPage = Math.max(0, Math.ceil(total / ASSET_PAGE_SIZE) - 1);
         setIndexedMode(true);
+        if (requestedPage > lastPage) {
+          setAssetPages((current) => ({ ...current, [view]: lastPage }));
+          return;
+        }
+        successfulAssetPagesRef.current = { ...successfulAssetPagesRef.current, [view]: requestedPage };
         setLibraryAssets(page.items);
-        loadedAssetIds.current = new Set(page.items.map((asset) => asset.id));
+        page.items.forEach((asset) => {
+          if (selectedIds.has(asset.id)) selectedAssetCache.current.set(asset.id, asset);
+        });
         if (page.total !== undefined) setIndexedTotal(page.total);
-        setNextOffset(page.nextOffset);
       }
-    } catch {
+    } catch (error) {
       // Running the React preview outside Tauri keeps the bundled demo library available.
+      if (forceIndexedMode || indexedModeRef.current) {
+        const fallbackPage = successfulAssetPagesRef.current[view];
+        setAssetPages((current) => ({ ...current, [view]: fallbackPage }));
+        showToast(error instanceof Error ? error.message : "无法读取资源页");
+      }
+    } finally {
+      if (requestId === assetRequest.current) setLoadingAssets(false);
     }
   };
 
@@ -283,18 +310,19 @@ export default function App() {
 
   useEffect(() => {
     if (!indexedMode) return;
-    // Invalidate an in-flight page from the previous query immediately. The
-    // debounced first-page refresh below will publish the new pagination state.
+    // Cancel the previous query immediately and reset every layout to its first page.
     assetRequest.current += 1;
-    setNextOffset(undefined);
+    successfulAssetPagesRef.current = initialAssetPages;
+    setLoadingAssets(true);
+    setAssetPages(initialAssetPages);
   }, [indexedMode, indexedQueryOptions]);
 
   useEffect(() => {
     if (!indexedMode) return;
-    const timer = window.setTimeout(() => void refreshIndexedAssets(true), 180);
+    const timer = window.setTimeout(() => void refreshIndexedAssets(true, activeAssetPage), 100);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort]);
+  }, [activeAssetPage, activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort, view]);
 
   useEffect(() => {
     if (!indexedMode || backgroundHeavyWorkRunning) return;
@@ -337,40 +365,28 @@ export default function App() {
 
   useEffect(() => {
     if (indexRevision === 0 || backgroundHeavyWorkRunning) return;
-    const timer = window.setTimeout(() => void refreshIndexedAssets(true), 500);
+    const timer = window.setTimeout(() => void refreshIndexedAssets(true, activeAssetPageRef.current), 500);
     return () => window.clearTimeout(timer);
     // Coalesce the scan writer and thumbnail worker's frequent commit notifications.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundHeavyWorkRunning, indexRevision]);
 
-  const loadMoreIndexedAssets = useCallback(async () => {
-    if (!indexedMode || nextOffset === undefined || assetPageLoadActive.current) return;
-    assetPageLoadActive.current = true;
+  const changeAssetPage = useCallback((page: number) => {
+    if (!indexedMode || loadingAssets) return;
+    const bounded = Math.min(Math.max(page, 0), Math.max(assetPageCount - 1, 0));
+    if (bounded === activeAssetPage) return;
     setLoadingAssets(true);
-    const offset = nextOffset;
-    const requestId = assetRequest.current;
-    try {
-      const page = await loadIndexedAssets({ ...indexedQueryOptions, offset, limit: ASSET_PAGE_SIZE, includeTotal: false });
-      if (requestId !== assetRequest.current) return;
-      const uniqueItems = page.items.filter((asset) => {
-        if (loadedAssetIds.current.has(asset.id)) return false;
-        loadedAssetIds.current.add(asset.id);
-        return true;
-      });
-      setLibraryAssets((current) => {
-        return [...current, ...uniqueItems];
-      });
-      if (page.total !== undefined) setIndexedTotal(page.total);
-      setNextOffset(page.nextOffset);
-    } catch (error) {
-      if (requestId === assetRequest.current) {
-        showToast(error instanceof Error ? error.message : "无法读取更多资源");
-      }
-    } finally {
-      assetPageLoadActive.current = false;
-      setLoadingAssets(false);
+    setAssetPages((current) => current[view] === bounded ? current : { ...current, [view]: bounded });
+  }, [activeAssetPage, assetPageCount, indexedMode, loadingAssets, view]);
+
+  const changeAssetView = useCallback((nextView: AssetView) => {
+    if (nextView === view) return;
+    if (indexedMode) {
+      assetRequest.current += 1;
+      setLoadingAssets(true);
     }
-  }, [indexedMode, indexedQueryOptions, nextOffset, showToast]);
+    setView(nextView);
+  }, [indexedMode, view]);
 
   const filteredAssets = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
@@ -409,19 +425,27 @@ export default function App() {
   filteredAssetsRef.current = filteredAssets;
 
   useEffect(() => {
-    if (filteredAssets.length > 0 && !filteredAssets.some((asset) => asset.id === selectedId)) {
-      setSelectedId(filteredAssets[0].id);
-    }
-  }, [filteredAssets, selectedId]);
+    if (filteredAssets.length === 0 || filteredAssets.some((asset) => asset.id === selectedId)) return;
+    const keepsCrossPageSelection = Boolean(selectedId && selectedIds.has(selectedId) && selectedAssetCache.current.has(selectedId));
+    if (!keepsCrossPageSelection) setSelectedId(filteredAssets[0].id);
+  }, [filteredAssets, selectedId, selectedIds]);
 
-  const selectedAsset = libraryAssets.find((asset) => asset.id === selectedId);
+  const selectedAsset = libraryAssets.find((asset) => asset.id === selectedId)
+    ?? (selectedId ? selectedAssetCache.current.get(selectedId) : undefined);
 
   const followAudioSequenceAsset = useCallback((asset: Asset) => {
     setLibraryAssets((current) => current.some((item) => item.id === asset.id) ? current : [...current, asset]);
     setSelectedId(asset.id);
     setSelectedIds(new Set([asset.id]));
+    selectedAssetCache.current.clear();
+    selectedAssetCache.current.set(asset.id, asset);
+    const cursor = audioSequenceCursorRef.current;
+    if (cursor?.indexed) {
+      const targetPage = Math.floor(Math.max(0, cursor.nextIndex - 1) / ASSET_PAGE_SIZE);
+      setAssetPages((current) => ({ ...current, [view]: targetPage }));
+    }
     lastSelectedId.current = asset.id;
-  }, []);
+  }, [view]);
 
   const handleStartAudioSequence = useCallback(() => {
     const audioAssets = filteredAssetsRef.current.filter((asset) => asset.kind === "音频");
@@ -435,7 +459,7 @@ export default function App() {
     audioSequenceCursorRef.current = {
       indexed: indexedMode,
       options: { ...indexedQueryOptions, filters: { ...effectiveFilters } },
-      nextIndex: startIndex + 1,
+      nextIndex: (indexedMode ? activeAssetPage * ASSET_PAGE_SIZE : 0) + startIndex + 1,
       fallbackAssets: audioAssets,
     };
     audioSequence.startSequence(startAsset, {
@@ -447,7 +471,8 @@ export default function App() {
           cursor.nextIndex += 1;
           return next;
         }
-        const loadedNext = filteredAssetsRef.current[cursor.nextIndex];
+        const pageOffset = activeAssetPageRef.current * ASSET_PAGE_SIZE;
+        const loadedNext = filteredAssetsRef.current[cursor.nextIndex - pageOffset];
         if (loadedNext?.kind === "音频") {
           cursor.nextIndex += 1;
           return loadedNext;
@@ -471,7 +496,7 @@ export default function App() {
         showToast(message);
       },
     });
-  }, [audioSequence, effectiveFilters, followAudioSequenceAsset, indexedMode, indexedQueryOptions, selectedId, showToast]);
+  }, [activeAssetPage, audioSequence, effectiveFilters, followAudioSequenceAsset, indexedMode, indexedQueryOptions, selectedId, showToast]);
 
   useEffect(() => {
     if (audioSequence.sequenceStatus === "idle" || (activeSection === "资产" && activeModule === "音频")) return;
@@ -543,6 +568,7 @@ export default function App() {
   const handleModuleChange = async (module: string) => {
     setActiveModule(module);
     setSelectedIds(new Set());
+    selectedAssetCache.current.clear();
     if (module === "全部" || categoryKinds[module]) {
       setFilters((current) => ({
         ...current,
@@ -598,7 +624,7 @@ export default function App() {
   };
 
   const handleBatchTags = async (tagIds: number[], operation: "add" | "remove") => {
-    const assets = libraryAssets.filter((asset) => selectedIds.has(asset.id));
+    const assets = [...selectedAssetCache.current.values()].filter((asset) => selectedIds.has(asset.id));
     await mutateAssetTags(assets, tagIds, operation);
     await refreshTags();
     setIndexRevision((revision) => revision + 1);
@@ -609,6 +635,8 @@ export default function App() {
     setSelectedId(asset.id);
     setSelectedIds((current) => {
       if (mode === "replace") {
+        selectedAssetCache.current.clear();
+        selectedAssetCache.current.set(asset.id, asset);
         lastSelectedId.current = asset.id;
         return new Set([asset.id]);
       }
@@ -617,12 +645,21 @@ export default function App() {
         const to = filteredAssets.findIndex((item) => item.id === asset.id);
         if (from >= 0 && to >= 0) {
           const next = new Set(current);
-          filteredAssets.slice(Math.min(from, to), Math.max(from, to) + 1).forEach((item) => next.add(item.id));
+          filteredAssets.slice(Math.min(from, to), Math.max(from, to) + 1).forEach((item) => {
+            next.add(item.id);
+            selectedAssetCache.current.set(item.id, item);
+          });
           return next;
         }
       }
       const next = new Set(current);
-      if (next.has(asset.id)) next.delete(asset.id); else next.add(asset.id);
+      if (next.has(asset.id)) {
+        next.delete(asset.id);
+        selectedAssetCache.current.delete(asset.id);
+      } else {
+        next.add(asset.id);
+        selectedAssetCache.current.set(asset.id, asset);
+      }
       lastSelectedId.current = asset.id;
       return next;
     });
@@ -704,6 +741,8 @@ export default function App() {
     setLibraryAssets((current) => current.map((item) => item.id === asset.id
       ? { ...item, name: renamed.name, localPath: renamed.path }
       : item));
+    const cached = selectedAssetCache.current.get(asset.id);
+    if (cached) selectedAssetCache.current.set(asset.id, { ...cached, name: renamed.name, localPath: renamed.path });
     showToast(`已重命名为「${renamed.name}」`);
   };
 
@@ -842,13 +881,13 @@ export default function App() {
               <ChevronDown size={14} />
             </label>
             <div className="view-toggle" aria-label="视图切换">
-              <button className={view === "grid" ? "active" : ""} onClick={() => setView("grid")} aria-label="网格视图" title="网格视图">
+              <button className={view === "grid" ? "active" : ""} onClick={() => changeAssetView("grid")} aria-label="网格视图" title="网格视图">
                 <Grid2X2 size={15} />
               </button>
-              <button className={view === "masonry" ? "active" : ""} onClick={() => setView("masonry")} aria-label="全图瀑布流视图" title="全图瀑布流视图">
+              <button className={view === "masonry" ? "active" : ""} onClick={() => changeAssetView("masonry")} aria-label="全图瀑布流视图" title="全图瀑布流视图">
                 <Columns3 size={16} />
               </button>
-              <button className={view === "list" ? "active" : ""} onClick={() => setView("list")} aria-label="列表视图" title="列表视图">
+              <button className={view === "list" ? "active" : ""} onClick={() => changeAssetView("list")} aria-label="列表视图" title="列表视图">
                 <List size={16} />
               </button>
             </div>
@@ -882,14 +921,17 @@ export default function App() {
 
           {selectedIds.size > 1 && (
             <BatchTagToolbar
-              assets={libraryAssets.filter((asset) => selectedIds.has(asset.id))}
+              assets={[...selectedAssetCache.current.values()].filter((asset) => selectedIds.has(asset.id))}
               catalog={tagCatalog}
-              onClear={() => setSelectedIds(new Set())}
+              onClear={() => {
+                selectedAssetCache.current.clear();
+                setSelectedIds(new Set());
+              }}
               onApply={handleBatchTags}
             />
           )}
 
-          <AssetVirtualGrid
+          <AssetPagedGrid
             assets={filteredAssets}
             selectedId={selectedId}
             selectedIds={selectedIds}
@@ -897,9 +939,11 @@ export default function App() {
             cardWidth={cardWidth}
             onSelect={handleAssetSelect}
             onOpen={handleViewOriginal}
-            hasMore={indexedMode && nextOffset !== undefined}
+            browseKey={assetBrowseKey}
+            pageIndex={activeAssetPage}
+            pageCount={assetPageCount}
             loading={loadingAssets}
-            onLoadMore={loadMoreIndexedAssets}
+            onPageChange={changeAssetPage}
             followAssetId={audioSequence.sequenceStatus !== "idle" ? audioSequence.activeAsset?.id : undefined}
           />
         </main>

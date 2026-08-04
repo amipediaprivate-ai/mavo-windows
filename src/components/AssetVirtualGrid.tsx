@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { Clock3, FolderOpen } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock3, FolderOpen } from "lucide-react";
 import type { Asset, AssetView } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
 import { AudioCardPlayer } from "./AudioPlayer";
@@ -8,7 +7,7 @@ import { AnimatedImagePlayer } from "./AnimatedImagePlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
 import { VideoCardPlayer } from "./VideoPlayer";
 
-interface AssetVirtualGridProps {
+interface AssetPagedGridProps {
   assets: Asset[];
   selectedId?: string;
   selectedIds?: Set<string>;
@@ -16,27 +15,15 @@ interface AssetVirtualGridProps {
   cardWidth: number;
   onSelect: (asset: Asset, mode: "replace" | "toggle" | "range") => void;
   onOpen: (asset: Asset) => void;
-  hasMore?: boolean;
+  browseKey: string;
+  pageIndex: number;
+  pageCount: number;
   loading?: boolean;
-  onLoadMore?: () => void;
+  onPageChange: (page: number) => void;
   followAssetId?: string;
 }
 
-const GRID_ASPECT_RATIO = 1.48;
-const GRID_CARD_BODY_HEIGHT = 78;
-const MASONRY_CARD_BODY_HEIGHT = 58;
-const LIST_ROW_HEIGHT = 72;
-const AUDIO_LIST_ROW_HEIGHT = 192;
-
-function listRowHeight(asset?: Asset) {
-  if (!asset) return LIST_ROW_HEIGHT;
-  return asset.kind === "音频" ? AUDIO_LIST_ROW_HEIGHT : LIST_ROW_HEIGHT;
-}
-
-function masonryCardHeight(asset: Asset | undefined, columnWidth: number) {
-  const contentWidth = Math.max(1, columnWidth - 2);
-  return Math.round(contentWidth / (asset ? assetAspectRatio(asset) : GRID_ASPECT_RATIO) + MASONRY_CARD_BODY_HEIGHT + 2);
-}
+type PageDirection = "previous" | "next";
 
 function AssetCard({
   asset,
@@ -57,6 +44,7 @@ function AssetCard({
   return (
     <article
       className={`asset-card ${selected ? "selected" : ""} ${view === "list" ? "list-card" : ""} ${view === "list" && asset.kind === "音频" ? "audio-list-card" : ""} ${view === "masonry" ? "masonry-card" : ""}`}
+      data-asset-id={asset.id}
       tabIndex={0}
       onClick={onSelect}
       onDoubleClick={onOpen}
@@ -115,7 +103,7 @@ function AssetCard({
   );
 }
 
-function AssetVirtualGridComponent({
+function AssetPagedGridComponent({
   assets,
   selectedId,
   selectedIds = new Set<string>(),
@@ -123,13 +111,30 @@ function AssetVirtualGridComponent({
   cardWidth,
   onSelect,
   onOpen,
-  hasMore = false,
+  browseKey,
+  pageIndex,
+  pageCount,
   loading = false,
-  onLoadMore,
+  onPageChange,
   followAssetId,
-}: AssetVirtualGridProps) {
+}: AssetPagedGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(900);
+  const scrollDirectionRef = useRef<PageDirection | undefined>(undefined);
+  const previousScrollTopRef = useRef(0);
+  const pendingDirectionRef = useRef<PageDirection | undefined>(undefined);
+  const lastRequestRef = useRef("");
+  const positionsRef = useRef(new Map<string, number>());
+  const previousBrowseKeyRef = useRef(browseKey);
+  const positionKey = `${browseKey}:${view}:${pageIndex}`;
+
+  useEffect(() => {
+    if (previousBrowseKeyRef.current === browseKey) return;
+    positionsRef.current.clear();
+    previousBrowseKeyRef.current = browseKey;
+  }, [browseKey]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -143,80 +148,74 @@ function AssetVirtualGridComponent({
 
   const gap = 12;
   const columns = view === "list" ? 1 : Math.max(1, Math.floor((containerWidth + gap) / (cardWidth + gap)));
-  const columnWidth = view === "list" ? containerWidth : (containerWidth - gap * (columns - 1)) / columns;
-  const rowHeight = view === "list" ? LIST_ROW_HEIGHT : Math.round(columnWidth / GRID_ASPECT_RATIO + GRID_CARD_BODY_HEIGHT + gap);
-  const rowCount = Math.ceil(assets.length / columns);
-  const masonry = view === "masonry";
-  const virtualCount = masonry ? assets.length : rowCount;
-  const getScrollElement = useCallback(() => scrollRef.current, []);
-  const assetsRef = useRef(assets);
-  assetsRef.current = assets;
-  const assetBoundaryKey = `${assets.length}:${assets[0]?.id ?? ""}:${assets.at(-1)?.id ?? ""}`;
-  const previousDatasetRef = useRef({ length: assets.length, firstId: assets[0]?.id, view });
+  const gridTemplate = useMemo(() => `repeat(${columns}, minmax(0, 1fr))`, [columns]);
+  const masonryColumns = useMemo(() => {
+    if (view !== "masonry") return [];
+    const lanes = Array.from({ length: columns }, () => ({ assets: [] as Asset[], height: 0 }));
+    assets.forEach((asset) => {
+      let shortest = lanes[0];
+      for (let index = 1; index < lanes.length; index += 1) {
+        if (lanes[index].height < shortest.height) shortest = lanes[index];
+      }
+      shortest.assets.push(asset);
+      shortest.height += 1 / assetAspectRatio(asset) + 0.24;
+    });
+    return lanes.map((lane) => lane.assets);
+  }, [assets, columns, view]);
 
-  const estimateSize = useCallback((index: number) => masonry
-    ? masonryCardHeight(assetsRef.current[index], columnWidth)
-    : view === "list"
-      ? listRowHeight(assetsRef.current[index])
-      : rowHeight, [assetBoundaryKey, columnWidth, masonry, rowHeight, view]);
-  const getItemKey = useCallback((index: number) => {
-    if (masonry) {
-      const asset = assetsRef.current[index];
-      return asset ? `${asset.id}:${assetAspectRatio(asset)}` : `${view}-${index}`;
-    }
-    const start = index * columns;
-    const first = assetsRef.current[start];
-    const last = assetsRef.current[Math.min(start + columns - 1, assetsRef.current.length - 1)];
-    return first ? `${view}:${first.id}:${last?.id ?? first.id}` : `${view}-row-${index}`;
-  }, [assetBoundaryKey, columns, masonry, view]);
-
-  const virtualizer = useVirtualizer({
-    count: virtualCount,
-    getScrollElement,
-    estimateSize,
-    getItemKey,
-    lanes: masonry ? columns : 1,
-    laneAssignmentMode: "estimate",
-    anchorTo: "end",
-    gap: masonry ? gap : 0,
-    overscan: 4,
-  });
-
-  useEffect(() => {
-    virtualizer.measure();
-  }, [cardWidth, columns, view, virtualizer]);
+  const requestPage = useCallback((direction: PageDirection) => {
+    if (loading) return;
+    const target = direction === "next" ? pageIndex + 1 : pageIndex - 1;
+    if (target < 0 || target >= pageCount) return;
+    const requestKey = `${browseKey}:${view}:${pageIndex}:${target}`;
+    if (lastRequestRef.current === requestKey) return;
+    lastRequestRef.current = requestKey;
+    pendingDirectionRef.current = direction;
+    positionsRef.current.set(positionKey, scrollRef.current?.scrollTop ?? 0);
+    onPageChange(target);
+  }, [browseKey, loading, onPageChange, pageCount, pageIndex, positionKey, view]);
 
   useLayoutEffect(() => {
-    const previous = previousDatasetRef.current;
-    const firstId = assets[0]?.id;
-    const datasetReplaced = previous.firstId !== firstId
-      || assets.length < previous.length
-      || previous.view !== view;
-    previousDatasetRef.current = { length: assets.length, firstId, view };
-    if (datasetReplaced && scrollRef.current && scrollRef.current.scrollTop > 0) {
-      virtualizer.scrollToOffset(0);
+    const element = scrollRef.current;
+    if (!element || loading) return;
+    const direction = pendingDirectionRef.current;
+    if (direction === "next") {
+      element.scrollTop = 0;
+    } else if (direction === "previous") {
+      element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    } else {
+      element.scrollTop = positionsRef.current.get(positionKey) ?? 0;
     }
-  }, [assetBoundaryKey, assets, view, virtualizer]);
+    previousScrollTopRef.current = element.scrollTop;
+    scrollDirectionRef.current = undefined;
+    pendingDirectionRef.current = undefined;
+    lastRequestRef.current = "";
+  }, [assets, loading, positionKey]);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    const top = topSentinelRef.current;
+    const bottom = bottomSentinelRef.current;
+    if (!root || !top || !bottom) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (loading) return;
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        if (entry.target === bottom && scrollDirectionRef.current === "next") requestPage("next");
+        if (entry.target === top && scrollDirectionRef.current === "previous") requestPage("previous");
+      });
+    }, { root, threshold: 0.75 });
+    observer.observe(top);
+    observer.observe(bottom);
+    return () => observer.disconnect();
+  }, [loading, requestPage]);
 
   useEffect(() => {
     if (!followAssetId) return;
-    const assetIndex = assets.findIndex((asset) => asset.id === followAssetId);
-    if (assetIndex < 0) return;
-    virtualizer.scrollToIndex(masonry ? assetIndex : Math.floor(assetIndex / columns), { align: "center" });
-  }, [assets, columns, followAssetId, masonry, virtualizer]);
+    const element = scrollRef.current?.querySelector<HTMLElement>(`[data-asset-id="${CSS.escape(followAssetId)}"]`);
+    element?.scrollIntoView({ block: "center" });
+  }, [assets, followAssetId]);
 
-  // During a count change the virtualizer can publish its previous range for
-  // one render. Never let an obsolete index escape into an AssetCard.
-  const virtualRows = virtualizer.getVirtualItems().filter((item) => (
-    item && item.index >= 0 && item.index < virtualCount
-  ));
-  const lastVirtualIndex = virtualRows.reduce((last, item) => Math.max(last, item.index), -1);
-  useEffect(() => {
-    if (hasMore && !loading && lastVirtualIndex >= virtualCount - 3) {
-      onLoadMore?.();
-    }
-  }, [hasMore, lastVirtualIndex, loading, onLoadMore, virtualCount]);
-  const gridTemplate = useMemo(() => `repeat(${columns}, minmax(0, 1fr))`, [columns]);
   const [showLoading, setShowLoading] = useState(false);
 
   useEffect(() => {
@@ -228,71 +227,71 @@ function AssetVirtualGridComponent({
     return () => window.clearTimeout(timer);
   }, [loading]);
 
+  const renderCard = (asset: Asset) => (
+    <AssetCard
+      key={asset.id}
+      asset={asset}
+      selected={selectedIds.has(asset.id) || selectedId === asset.id}
+      view={view}
+      onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
+      onActivate={() => onSelect(asset, "replace")}
+      onOpen={() => onOpen(asset)}
+    />
+  );
+
   return (
-    <div className="asset-scroll" ref={scrollRef}>
+    <div
+      className="asset-scroll"
+      ref={scrollRef}
+      onScroll={(event) => {
+        const nextTop = event.currentTarget.scrollTop;
+        if (Math.abs(nextTop - previousScrollTopRef.current) > 1) {
+          scrollDirectionRef.current = nextTop > previousScrollTopRef.current ? "next" : "previous";
+        }
+        previousScrollTopRef.current = nextTop;
+        positionsRef.current.set(positionKey, nextTop);
+      }}
+      onWheel={(event) => {
+        if (event.deltaY === 0) return;
+        scrollDirectionRef.current = event.deltaY > 0 ? "next" : "previous";
+        const element = event.currentTarget;
+        if (event.deltaY > 0 && element.scrollTop + element.clientHeight >= element.scrollHeight - 2) requestPage("next");
+        if (event.deltaY < 0 && element.scrollTop <= 1) requestPage("previous");
+      }}
+    >
+      <div ref={topSentinelRef} className="asset-page-sentinel" aria-hidden="true" />
       {assets.length === 0 ? (
         <div className="empty-state">
           <div className="empty-graphic"><FolderOpen size={28} /></div>
           <strong>没有符合条件的资源</strong>
           <span>尝试调整搜索词或清除筛选条件</span>
         </div>
-      ) : (
-        <div className="virtual-canvas" style={{ height: virtualizer.getTotalSize() }}>
-          {masonry ? virtualRows.map((virtualItem) => {
-            const asset = assets[virtualItem.index];
-            if (!asset) return null;
-            return (
-              <div
-                className="masonry-item"
-                key={virtualItem.key}
-                style={{
-                  width: columnWidth,
-                  height: virtualItem.size,
-                  transform: `translate3d(${virtualItem.lane * (columnWidth + gap)}px, ${virtualItem.start}px, 0)`,
-                }}
-              >
-                <AssetCard
-                  asset={asset}
-                  selected={selectedIds.has(asset.id) || selectedId === asset.id}
-                  view={view}
-                  onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
-                  onActivate={() => onSelect(asset, "replace")}
-                  onOpen={() => onOpen(asset)}
-                />
-              </div>
-            );
-          }) : virtualRows.map((virtualRow) => {
-            const start = virtualRow.index * columns;
-            const rowAssets = assets.slice(start, start + columns);
-            return (
-              <div
-                className={`virtual-row ${view === "list" ? "list-row" : ""}`}
-                key={virtualRow.key}
-                style={{
-                  height: virtualRow.size - gap,
-                  gridTemplateColumns: gridTemplate,
-                  transform: `translateY(${virtualRow.start}px)`,
-                }}
-              >
-                {rowAssets.map((asset) => (
-                  <AssetCard
-                    key={asset.id}
-                    asset={asset}
-                    selected={selectedIds.has(asset.id) || selectedId === asset.id}
-                    view={view}
-                    onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
-                    onActivate={() => onSelect(asset, "replace")}
-                    onOpen={() => onOpen(asset)}
-                  />
-                ))}
-              </div>
-            );
-          })}
+      ) : view === "masonry" ? (
+        <div className="asset-page-masonry" style={{ gridTemplateColumns: gridTemplate }}>
+          {masonryColumns.map((column, index) => (
+            <div className="asset-masonry-column" key={`column-${index}`}>{column.map(renderCard)}</div>
+          ))}
         </div>
+      ) : view === "list" ? (
+        <div className="asset-page-list">{assets.map(renderCard)}</div>
+      ) : (
+        <div className="asset-page-grid" style={{ gridTemplateColumns: gridTemplate }}>{assets.map(renderCard)}</div>
+      )}
+      <div ref={bottomSentinelRef} className="asset-page-sentinel" aria-hidden="true" />
+      {pageCount > 1 && (
+        <nav className="asset-pagination" aria-label="资源分页">
+          <button type="button" disabled={loading || pageIndex === 0} onClick={() => requestPage("previous")}>
+            <ChevronLeft size={13} /> 上一页
+          </button>
+          <span>第 {(pageIndex + 1).toLocaleString("zh-CN")} / {pageCount.toLocaleString("zh-CN")} 页</span>
+          <button type="button" disabled={loading || pageIndex >= pageCount - 1} onClick={() => requestPage("next")}>
+            下一页 <ChevronRight size={13} />
+          </button>
+        </nav>
       )}
       {showLoading && <div className="asset-loading-anchor"><div className="asset-page-loading">正在读取资源…</div></div>}
     </div>
   );
 }
 
-export const AssetVirtualGrid = memo(AssetVirtualGridComponent);
+export const AssetPagedGrid = memo(AssetPagedGridComponent);
