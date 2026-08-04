@@ -2,6 +2,7 @@ import { useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "
 import type { Asset } from "../types";
 import { useAudioPlayer } from "../audio/AudioPlayerContext";
 import { canPlayAudio } from "../lib/desktopAssets";
+import { formatAudioTime } from "../lib/audioTime";
 
 interface AudioWaveformProps {
   asset: Asset;
@@ -10,14 +11,7 @@ interface AudioWaveformProps {
 
 const fallbackBars = [18, 34, 57, 27, 76, 48, 31, 68, 42, 22, 54, 82, 46, 29, 64, 38, 72, 44, 25, 51, 34, 62, 40, 19];
 
-export function formatAudioTime(seconds: number) {
-  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const remainder = safeSeconds % 60;
-  if (hours > 0) return `${hours}:${minutes.toString().padStart(2, "0")}:${remainder.toString().padStart(2, "0")}`;
-  return `${minutes.toString().padStart(2, "0")}:${remainder.toString().padStart(2, "0")}`;
-}
+export { formatAudioTime } from "../lib/audioTime";
 
 function FallbackWaveform({ color }: { color: string }) {
   return (

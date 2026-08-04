@@ -7,12 +7,16 @@ import {
   Columns3,
   Grid2X2,
   List,
+  Pause,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightOpen,
+  Play,
   SlidersHorizontal,
+  Square,
   X,
 } from "lucide-react";
+import { useAudioSequence } from "./audio/AudioPlayerContext";
 import { AppHeader } from "./components/AppHeader";
 import { AssetVirtualGrid } from "./components/AssetVirtualGrid";
 import { AssetPreviewDialog } from "./components/AssetPreviewDialog";
@@ -53,7 +57,7 @@ import {
   type TagInput,
 } from "./lib/indexedAssets";
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
-import type { AssetKind, AssetView, Filters, ScanScope } from "./types";
+import type { Asset, AssetKind, AssetView, Filters, ScanScope } from "./types";
 
 const emptyFilters: Filters = {
   source: [],
@@ -83,7 +87,15 @@ const categoryKinds: Partial<Record<string, AssetKind>> = {
 
 const ASSET_PAGE_SIZE = 200;
 
+interface AudioSequenceCursor {
+  indexed: boolean;
+  options: LoadIndexedAssetsOptions;
+  nextIndex: number;
+  fallbackAssets: Asset[];
+}
+
 export default function App() {
+  const audioSequence = useAudioSequence();
   const [activeSection, setActiveSection] = useState<"资产" | "工具">("资产");
   const [libraryAssets, setLibraryAssets] = useState(initialAssets);
   const [query, setQuery] = useState("");
@@ -120,6 +132,8 @@ export default function App() {
   const indexedModeRef = useRef(indexedMode);
   const indexedQueryOptionsRef = useRef<LoadIndexedAssetsOptions>({});
   const lastSelectedId = useRef<string | undefined>(undefined);
+  const filteredAssetsRef = useRef<Asset[]>(initialAssets);
+  const audioSequenceCursorRef = useRef<AudioSequenceCursor | undefined>(undefined);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -392,6 +406,7 @@ export default function App() {
       return b.importedAt.localeCompare(a.importedAt);
     });
   }, [activeCategoryKind, activeModule, filters, indexedMode, libraryAssets, query, sort]);
+  filteredAssetsRef.current = filteredAssets;
 
   useEffect(() => {
     if (filteredAssets.length > 0 && !filteredAssets.some((asset) => asset.id === selectedId)) {
@@ -400,6 +415,69 @@ export default function App() {
   }, [filteredAssets, selectedId]);
 
   const selectedAsset = libraryAssets.find((asset) => asset.id === selectedId);
+
+  const followAudioSequenceAsset = useCallback((asset: Asset) => {
+    setLibraryAssets((current) => current.some((item) => item.id === asset.id) ? current : [...current, asset]);
+    setSelectedId(asset.id);
+    setSelectedIds(new Set([asset.id]));
+    lastSelectedId.current = asset.id;
+  }, []);
+
+  const handleStartAudioSequence = useCallback(() => {
+    const audioAssets = filteredAssetsRef.current.filter((asset) => asset.kind === "音频");
+    if (audioAssets.length === 0) {
+      showToast("当前排序中没有可播放的音频");
+      return;
+    }
+    const selectedIndex = selectedId ? audioAssets.findIndex((asset) => asset.id === selectedId) : -1;
+    const startIndex = selectedIndex >= 0 ? selectedIndex : 0;
+    const startAsset = audioAssets[startIndex];
+    audioSequenceCursorRef.current = {
+      indexed: indexedMode,
+      options: { ...indexedQueryOptions, filters: { ...effectiveFilters } },
+      nextIndex: startIndex + 1,
+      fallbackAssets: audioAssets,
+    };
+    audioSequence.startSequence(startAsset, {
+      getNext: async () => {
+        const cursor = audioSequenceCursorRef.current;
+        if (!cursor) return undefined;
+        if (!cursor.indexed) {
+          const next = cursor.fallbackAssets[cursor.nextIndex];
+          cursor.nextIndex += 1;
+          return next;
+        }
+        const loadedNext = filteredAssetsRef.current[cursor.nextIndex];
+        if (loadedNext?.kind === "音频") {
+          cursor.nextIndex += 1;
+          return loadedNext;
+        }
+        const page = await loadIndexedAssets({
+          ...cursor.options,
+          offset: cursor.nextIndex,
+          limit: 1,
+          includeTotal: false,
+        });
+        cursor.nextIndex += 1;
+        return page.items[0];
+      },
+      onAssetChange: followAudioSequenceAsset,
+      onFinished: () => {
+        audioSequenceCursorRef.current = undefined;
+        showToast("已播放完当前排序中的全部音频");
+      },
+      onError: (message) => {
+        audioSequenceCursorRef.current = undefined;
+        showToast(message);
+      },
+    });
+  }, [audioSequence, effectiveFilters, followAudioSequenceAsset, indexedMode, indexedQueryOptions, selectedId, showToast]);
+
+  useEffect(() => {
+    if (audioSequence.sequenceStatus === "idle" || (activeSection === "资产" && activeModule === "音频")) return;
+    audioSequenceCursorRef.current = undefined;
+    audioSequence.stopSequence();
+  }, [activeModule, activeSection, audioSequence]);
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = { 全部: 0, 图片: 0, 动图: 0, 音频: 0, 视频: 0 };
     if (facets) {
@@ -730,6 +808,30 @@ export default function App() {
               {appliedFilterCount > 0 && <span className="filter-count"><SlidersHorizontal size={12} /> {appliedFilterCount}</span>}
             </div>
             <div className="toolbar-spacer" />
+            {activeModule === "音频" && (
+              <div className="audio-sequence-controls" aria-label="顺序播放控制">
+                {audioSequence.sequenceStatus === "idle" ? (
+                  <button type="button" className="audio-sequence-primary" onClick={handleStartAudioSequence}>
+                    <Play size={13} fill="currentColor" /> 顺序播放
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="audio-sequence-primary active"
+                      onClick={audioSequence.sequenceStatus === "playing" ? audioSequence.pauseSequence : audioSequence.resumeSequence}
+                    >
+                      {audioSequence.sequenceStatus === "playing"
+                        ? <><Pause size={13} fill="currentColor" /> 暂停</>
+                        : <><Play size={13} fill="currentColor" /> 继续</>}
+                    </button>
+                    <button type="button" className="audio-sequence-stop" onClick={audioSequence.stopSequence} title="停止顺序播放">
+                      <Square size={11} fill="currentColor" /> 停止
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             <label className="sort-select">
               <select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="资源排序">
                 <option value="newest">导入时间：从新到旧</option>
@@ -798,6 +900,7 @@ export default function App() {
             hasMore={indexedMode && nextOffset !== undefined}
             loading={loadingAssets}
             onLoadMore={loadMoreIndexedAssets}
+            followAssetId={audioSequence.sequenceStatus !== "idle" ? audioSequence.activeAsset?.id : undefined}
           />
         </main>
 

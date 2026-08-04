@@ -1603,6 +1603,49 @@ select:focus-visible,
   flex: 1;
 }
 
+.audio-sequence-controls {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.audio-sequence-controls button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 10px;
+  color: #526078;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.audio-sequence-controls button:hover {
+  color: var(--primary);
+  border-color: #b9c7f5;
+  background: #f6f8ff;
+}
+
+.audio-sequence-controls .audio-sequence-primary.active {
+  color: #fff;
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+.audio-sequence-controls .audio-sequence-primary.active:hover {
+  border-color: var(--primary-hover);
+  background: var(--primary-hover);
+}
+
+.audio-sequence-controls .audio-sequence-stop {
+  color: #8b5660;
+}
+
 .sort-select {
   position: relative;
   height: 34px;

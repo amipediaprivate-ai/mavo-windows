@@ -14,22 +14,39 @@ import { announceMediaPlayback, MEDIA_PLAYBACK_STARTED_EVENT, playbackOwner } fr
 
 export type AudioPlaybackMode = "once" | "loop";
 export type AudioPlaybackStatus = "idle" | "loading" | "playing" | "paused" | "error";
+export type AudioSequenceStatus = "idle" | "playing" | "paused";
+
+export interface AudioSequenceController {
+  getNext: (currentAsset: Asset) => Promise<Asset | undefined>;
+  onAssetChange: (asset: Asset) => void;
+  onFinished?: () => void;
+  onError?: (message: string) => void;
+}
 
 interface AudioPlayerValue {
   activeAsset?: Asset;
   status: AudioPlaybackStatus;
   currentTime: number;
   duration: number;
-  mode: AudioPlaybackMode;
   volume: number;
   error: string;
   isActive: (asset: Asset) => boolean;
+  modeFor: (asset: Asset) => AudioPlaybackMode;
   toggle: (asset: Asset) => void;
   seekAndPlay: (asset: Asset, time: number) => void;
   skip: (seconds: number) => void;
-  setMode: (mode: AudioPlaybackMode) => void;
+  setMode: (asset: Asset, mode: AudioPlaybackMode) => void;
   setVolume: (volume: number) => void;
   toggleMute: () => void;
+}
+
+interface AudioSequenceValue {
+  activeAsset?: Asset;
+  sequenceStatus: AudioSequenceStatus;
+  startSequence: (asset: Asset, controller: AudioSequenceController) => void;
+  pauseSequence: () => void;
+  resumeSequence: () => void;
+  stopSequence: () => void;
 }
 
 interface PendingPlayback {
@@ -39,12 +56,20 @@ interface PendingPlayback {
 }
 
 const AudioPlayerContext = createContext<AudioPlayerValue | undefined>(undefined);
+const AudioSequenceContext = createContext<AudioSequenceValue | undefined>(undefined);
+const PLAYBACK_MODES_KEY = "mavo-audio-playback-modes";
 
-function savedPlaybackMode(): AudioPlaybackMode {
+function playbackModeKey(asset: Asset) {
+  return asset.assetUid ?? asset.id;
+}
+
+function savedPlaybackModes(): Record<string, AudioPlaybackMode> {
   try {
-    return window.localStorage.getItem("mavo-audio-playback-mode") === "loop" ? "loop" : "once";
+    const parsed = JSON.parse(window.localStorage.getItem(PLAYBACK_MODES_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, AudioPlaybackMode] => entry[1] === "loop"));
   } catch {
-    return "once";
+    return {};
   }
 }
 
@@ -80,14 +105,28 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
   const pendingPlaybackRef = useRef<PendingPlayback | undefined>(undefined);
   const tickerRef = useRef<number | undefined>(undefined);
   const lastTickRef = useRef(0);
+  const sequenceControllerRef = useRef<AudioSequenceController | undefined>(undefined);
+  const sequenceGenerationRef = useRef(0);
+  const sequenceAdvancingRef = useRef(false);
+  const sequenceStatusRef = useRef<AudioSequenceStatus>("idle");
   const [activeAsset, setActiveAsset] = useState<Asset>();
   const [status, setStatus] = useState<AudioPlaybackStatus>("idle");
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [mode, setPlaybackMode] = useState<AudioPlaybackMode>(savedPlaybackMode);
+  const [sequenceStatus, setSequenceStatusState] = useState<AudioSequenceStatus>("idle");
+  const [playbackModes, setPlaybackModes] = useState<Record<string, AudioPlaybackMode>>(savedPlaybackModes);
+  const playbackModesRef = useRef(playbackModes);
   const [volume, setVolumeState] = useState(savedVolume);
   const lastAudibleVolumeRef = useRef(volume > 0 ? volume : 1);
   const [error, setError] = useState("");
+  playbackModesRef.current = playbackModes;
+
+  const setSequenceStatus = useCallback((nextStatus: AudioSequenceStatus) => {
+    sequenceStatusRef.current = nextStatus;
+    setSequenceStatusState(nextStatus);
+  }, []);
+
+  const modeFor = useCallback((asset: Asset): AudioPlaybackMode => playbackModes[playbackModeKey(asset)] ?? "once", [playbackModes]);
 
   const stopTicker = useCallback(() => {
     if (tickerRef.current !== undefined) {
@@ -104,9 +143,7 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
         tickerRef.current = undefined;
         return;
       }
-      // Five visual updates per second keep the waveform smooth enough while
-      // avoiding a context-driven re-render of every visible audio card at 20 Hz.
-      if (timestamp - lastTickRef.current >= 200) {
+      if (timestamp - lastTickRef.current >= 100) {
         lastTickRef.current = timestamp;
         setCurrentTime(audio.currentTime);
       }
@@ -122,12 +159,28 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
   }, [volume]);
 
   useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !activeAsset) return;
+    audio.loop = sequenceStatus === "idle" && modeFor(activeAsset) === "loop";
+  }, [activeAsset, modeFor, sequenceStatus]);
+
+  useEffect(() => {
     const pauseForOtherMedia = (event: Event) => {
       if (playbackOwner(event) !== "global-audio") audioRef.current?.pause();
     };
     window.addEventListener(MEDIA_PLAYBACK_STARTED_EVENT, pauseForOtherMedia);
     return () => window.removeEventListener(MEDIA_PLAYBACK_STARTED_EVENT, pauseForOtherMedia);
   }, []);
+
+  const clearSequence = useCallback(() => {
+    sequenceGenerationRef.current += 1;
+    sequenceAdvancingRef.current = false;
+    sequenceControllerRef.current = undefined;
+    setSequenceStatus("idle");
+    const audio = audioRef.current;
+    const asset = activeAssetRef.current;
+    if (audio && asset) audio.loop = playbackModesRef.current[playbackModeKey(asset)] === "loop";
+  }, [setSequenceStatus]);
 
   const playElement = useCallback((audio: HTMLAudioElement) => {
     setError("");
@@ -138,9 +191,10 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const prepareAsset = useCallback((asset: Asset, time: number | undefined, autoplay: boolean) => {
+  const prepareAsset = useCallback((asset: Asset, time: number | undefined, autoplay: boolean, preserveSequence = false) => {
     const audio = audioRef.current;
     if (!audio) return;
+    if (!preserveSequence && sequenceStatusRef.current !== "idle") clearSequence();
     if (!canPlayAudio(asset)) {
       setActiveAsset(asset);
       activeAssetRef.current = asset;
@@ -152,7 +206,9 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     }
 
     const sameAsset = activeAssetRef.current?.id === asset.id;
+    audio.loop = sequenceStatusRef.current === "idle" && playbackModesRef.current[playbackModeKey(asset)] === "loop";
     if (!sameAsset) {
+      pendingPlaybackRef.current = { assetId: asset.id, time, autoplay };
       audio.pause();
       activeAssetRef.current = asset;
       setActiveAsset(asset);
@@ -160,7 +216,6 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
       setDuration((asset.durationMs ?? 0) / 1000);
       setError("");
       setStatus("loading");
-      pendingPlaybackRef.current = { assetId: asset.id, time, autoplay };
       audio.src = audioPlaybackUrl(asset);
       audio.load();
       return;
@@ -172,24 +227,56 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
       setCurrentTime(audio.currentTime);
     }
     if (autoplay) playElement(audio);
-  }, [playElement]);
+  }, [clearSequence, playElement]);
+
+  const advanceSequence = useCallback(async () => {
+    const controller = sequenceControllerRef.current;
+    const currentAsset = activeAssetRef.current;
+    if (!controller || !currentAsset || sequenceStatusRef.current === "idle") return;
+    const generation = sequenceGenerationRef.current;
+    sequenceAdvancingRef.current = true;
+    try {
+      const nextAsset = await controller.getNext(currentAsset);
+      if (generation !== sequenceGenerationRef.current || controller !== sequenceControllerRef.current) return;
+      sequenceAdvancingRef.current = false;
+      if (!nextAsset) {
+        clearSequence();
+        setStatus("paused");
+        controller.onFinished?.();
+        return;
+      }
+      controller.onAssetChange(nextAsset);
+      prepareAsset(nextAsset, 0, sequenceStatusRef.current === "playing", true);
+    } catch (reason) {
+      if (generation !== sequenceGenerationRef.current) return;
+      sequenceAdvancingRef.current = false;
+      const message = reason instanceof Error ? reason.message : "无法继续顺序播放";
+      clearSequence();
+      setStatus("error");
+      setError(message);
+      controller.onError?.(message);
+    }
+  }, [clearSequence, prepareAsset]);
 
   const toggle = useCallback((asset: Asset) => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (activeAssetRef.current?.id === asset.id && !audio.paused) {
+    const sameAsset = activeAssetRef.current?.id === asset.id;
+    if (sameAsset && !audio.paused) {
       audio.pause();
       return;
     }
-    const restartAt = activeAssetRef.current?.id === asset.id && Number.isFinite(audio.duration) && audio.currentTime >= audio.duration
-      ? 0
-      : undefined;
-    prepareAsset(asset, restartAt, true);
-  }, [prepareAsset]);
+    if (!sameAsset && sequenceStatusRef.current !== "idle") clearSequence();
+    if (sameAsset && sequenceStatusRef.current === "paused") setSequenceStatus("playing");
+    const restartAt = sameAsset && Number.isFinite(audio.duration) && audio.currentTime >= audio.duration ? 0 : undefined;
+    prepareAsset(asset, restartAt, true, sameAsset && sequenceStatusRef.current !== "idle");
+  }, [clearSequence, prepareAsset, setSequenceStatus]);
 
   const seekAndPlay = useCallback((asset: Asset, time: number) => {
-    prepareAsset(asset, time, true);
-  }, [prepareAsset]);
+    const sameSequenceAsset = sequenceStatusRef.current !== "idle" && activeAssetRef.current?.id === asset.id;
+    if (sameSequenceAsset) setSequenceStatus("playing");
+    prepareAsset(asset, time, true, sameSequenceAsset);
+  }, [prepareAsset, setSequenceStatus]);
 
   const skip = useCallback((seconds: number) => {
     const audio = audioRef.current;
@@ -199,15 +286,70 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     setCurrentTime(audio.currentTime);
   }, [duration]);
 
-  const setMode = useCallback((nextMode: AudioPlaybackMode) => {
-    setPlaybackMode(nextMode);
-    if (audioRef.current) audioRef.current.loop = nextMode === "loop";
-    try {
-      window.localStorage.setItem("mavo-audio-playback-mode", nextMode);
-    } catch {
-      // Playback still works if persistent storage is unavailable.
+  const setMode = useCallback((asset: Asset, nextMode: AudioPlaybackMode) => {
+    setPlaybackModes((current) => {
+      const next = { ...current };
+      const key = playbackModeKey(asset);
+      if (nextMode === "loop") next[key] = "loop"; else delete next[key];
+      try {
+        window.localStorage.setItem(PLAYBACK_MODES_KEY, JSON.stringify(next));
+      } catch {
+        // Playback still works if persistent storage is unavailable.
+      }
+      return next;
+    });
+    if (activeAssetRef.current?.id === asset.id && sequenceStatusRef.current === "idle" && audioRef.current) {
+      audioRef.current.loop = nextMode === "loop";
     }
   }, []);
+
+  const startSequence = useCallback((asset: Asset, controller: AudioSequenceController) => {
+    sequenceGenerationRef.current += 1;
+    sequenceAdvancingRef.current = false;
+    sequenceControllerRef.current = controller;
+    setSequenceStatus("playing");
+    controller.onAssetChange(asset);
+    prepareAsset(asset, 0, true, true);
+  }, [prepareAsset, setSequenceStatus]);
+
+  const pauseSequence = useCallback(() => {
+    if (sequenceStatusRef.current === "idle") return;
+    if (pendingPlaybackRef.current) pendingPlaybackRef.current.autoplay = false;
+    audioRef.current?.pause();
+    setSequenceStatus("paused");
+    setStatus("paused");
+  }, [setSequenceStatus]);
+
+  const resumeSequence = useCallback(() => {
+    if (sequenceStatusRef.current !== "paused") return;
+    setSequenceStatus("playing");
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (sequenceAdvancingRef.current) {
+      setStatus("loading");
+      return;
+    }
+    if (pendingPlaybackRef.current) {
+      pendingPlaybackRef.current.autoplay = true;
+      setStatus("loading");
+    } else {
+      playElement(audio);
+    }
+  }, [playElement, setSequenceStatus]);
+
+  const stopSequence = useCallback(() => {
+    if (sequenceStatusRef.current === "idle") return;
+    clearSequence();
+    pendingPlaybackRef.current = undefined;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+    stopTicker();
+    setCurrentTime(0);
+    setStatus("idle");
+  }, [clearSequence, stopTicker]);
 
   const setVolume = useCallback((nextVolume: number) => {
     const normalized = Math.min(Math.max(Number.isFinite(nextVolume) ? nextVolume : 1, 0), 1);
@@ -230,69 +372,93 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     status,
     currentTime,
     duration,
-    mode,
     volume,
     error,
     isActive: (asset) => activeAsset?.id === asset.id,
+    modeFor,
     toggle,
     seekAndPlay,
     skip,
     setMode,
     setVolume,
     toggleMute,
-  }), [activeAsset, status, currentTime, duration, mode, volume, error, toggle, seekAndPlay, skip, setMode, setVolume, toggleMute]);
+  }), [activeAsset, status, currentTime, duration, volume, error, modeFor, toggle, seekAndPlay, skip, setMode, setVolume, toggleMute]);
+
+  const sequenceValue = useMemo<AudioSequenceValue>(() => ({
+    activeAsset,
+    sequenceStatus,
+    startSequence,
+    pauseSequence,
+    resumeSequence,
+    stopSequence,
+  }), [activeAsset, sequenceStatus, startSequence, pauseSequence, resumeSequence, stopSequence]);
 
   return (
-    <AudioPlayerContext.Provider value={value}>
-      {children}
-      <audio
-        ref={audioRef}
-        className="global-audio-element"
-        preload="metadata"
-        loop={mode === "loop"}
-        onLoadedMetadata={(event) => {
-          const audio = event.currentTarget;
-          setDuration(Number.isFinite(audio.duration) ? audio.duration : (activeAssetRef.current?.durationMs ?? 0) / 1000);
-          const pending = pendingPlaybackRef.current;
-          if (!pending || pending.assetId !== activeAssetRef.current?.id) return;
-          pendingPlaybackRef.current = undefined;
-          if (pending.time !== undefined) {
-            audio.currentTime = Math.min(Math.max(pending.time, 0), Number.isFinite(audio.duration) ? audio.duration : pending.time);
-            setCurrentTime(audio.currentTime);
-          }
-          if (pending.autoplay) playElement(audio);
-        }}
-        onPlaying={() => {
-          announceMediaPlayback("global-audio");
-          setStatus("playing");
-          startTicker();
-        }}
-        onWaiting={() => setStatus("loading")}
-        onCanPlay={(event) => {
-          if (!event.currentTarget.paused) setStatus("playing");
-        }}
-        onPause={(event) => {
-          stopTicker();
-          setCurrentTime(event.currentTarget.currentTime);
-          if (!event.currentTarget.ended) setStatus("paused");
-        }}
-        onEnded={(event) => {
-          stopTicker();
-          setCurrentTime(event.currentTarget.duration);
-          setStatus("paused");
-        }}
-        onError={(event) => {
-          stopTicker();
-          setStatus("error");
-          setError(mediaErrorMessage(event.currentTarget));
-        }}
-      />
-    </AudioPlayerContext.Provider>
+    <AudioSequenceContext.Provider value={sequenceValue}>
+      <AudioPlayerContext.Provider value={value}>
+        {children}
+        <audio
+          ref={audioRef}
+          className="global-audio-element"
+          preload="metadata"
+          onLoadedMetadata={(event) => {
+            const audio = event.currentTarget;
+            audio.loop = sequenceStatusRef.current === "idle" && !!activeAssetRef.current
+              && playbackModesRef.current[playbackModeKey(activeAssetRef.current)] === "loop";
+            setDuration(Number.isFinite(audio.duration) ? audio.duration : (activeAssetRef.current?.durationMs ?? 0) / 1000);
+            const pending = pendingPlaybackRef.current;
+            if (!pending || pending.assetId !== activeAssetRef.current?.id) return;
+            pendingPlaybackRef.current = undefined;
+            if (pending.time !== undefined) {
+              audio.currentTime = Math.min(Math.max(pending.time, 0), Number.isFinite(audio.duration) ? audio.duration : pending.time);
+              setCurrentTime(audio.currentTime);
+            }
+            if (pending.autoplay) playElement(audio); else setStatus("paused");
+          }}
+          onPlaying={() => {
+            announceMediaPlayback("global-audio");
+            setStatus("playing");
+            startTicker();
+          }}
+          onWaiting={() => setStatus("loading")}
+          onCanPlay={(event) => {
+            if (!event.currentTarget.paused) setStatus("playing");
+          }}
+          onPause={(event) => {
+            stopTicker();
+            setCurrentTime(event.currentTarget.currentTime);
+            if (!event.currentTarget.ended && !pendingPlaybackRef.current) {
+              setStatus("paused");
+              if (sequenceStatusRef.current === "playing") setSequenceStatus("paused");
+            }
+          }}
+          onEnded={(event) => {
+            stopTicker();
+            setCurrentTime(event.currentTarget.duration);
+            if (sequenceStatusRef.current !== "idle") void advanceSequence(); else setStatus("paused");
+          }}
+          onError={(event) => {
+            stopTicker();
+            pendingPlaybackRef.current = undefined;
+            const message = mediaErrorMessage(event.currentTarget);
+            setStatus("error");
+            setError(message);
+            if (sequenceStatusRef.current !== "idle") void advanceSequence();
+          }}
+        />
+      </AudioPlayerContext.Provider>
+    </AudioSequenceContext.Provider>
   );
 }
 
 export function useAudioPlayer() {
   const context = useContext(AudioPlayerContext);
   if (!context) throw new Error("useAudioPlayer must be used inside AudioPlayerProvider");
+  return context;
+}
+
+export function useAudioSequence() {
+  const context = useContext(AudioSequenceContext);
+  if (!context) throw new Error("useAudioSequence must be used inside AudioPlayerProvider");
   return context;
 }

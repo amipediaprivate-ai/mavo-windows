@@ -19,6 +19,7 @@ interface AssetVirtualGridProps {
   hasMore?: boolean;
   loading?: boolean;
   onLoadMore?: () => void;
+  followAssetId?: string;
 }
 
 const GRID_ASPECT_RATIO = 1.48;
@@ -124,6 +125,7 @@ function AssetVirtualGridComponent({
   hasMore = false,
   loading = false,
   onLoadMore,
+  followAssetId,
 }: AssetVirtualGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(900);
@@ -181,6 +183,13 @@ function AssetVirtualGridComponent({
   useEffect(() => {
     virtualizer.measure();
   }, [cardWidth, columns, view, virtualizer]);
+
+  useEffect(() => {
+    if (!followAssetId) return;
+    const assetIndex = assets.findIndex((asset) => asset.id === followAssetId);
+    if (assetIndex < 0) return;
+    virtualizer.scrollToIndex(masonry ? assetIndex : Math.floor(assetIndex / columns), { align: "center" });
+  }, [assets, columns, followAssetId, masonry, virtualizer]);
 
   const virtualRows = virtualizer.getVirtualItems();
   const lastVirtualIndex = virtualRows.reduce((last, item) => Math.max(last, item.index), -1);

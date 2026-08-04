@@ -1,5 +1,6 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Asset, AssetKind, AssetTag, Filters } from "../types";
+import { formatAudioMilliseconds } from "./audioTime";
 
 export interface IndexedAssetRecord {
   id: number;
@@ -181,7 +182,7 @@ export function formatIndexedAssetDimensions(record: IndexedAssetRecord) {
   const { width, height, durationMs } = record;
   const hasDuration = typeof durationMs === "number" && Number.isFinite(durationMs);
   if (record.kind === "音频") {
-    if (hasDuration) return formatDuration(durationMs);
+    if (hasDuration) return formatAudioMilliseconds(durationMs);
     if (record.metadataStatus === "unsupported") return "无法分析";
     if (record.metadataStatus === "ready") return "无可用时长信息";
     return "时长待分析";

@@ -74,6 +74,7 @@ export function AudioCardPlayer({ asset, onActivate }: { asset: Asset; onActivat
   const playing = active && player.status === "playing";
   const loading = active && player.status === "loading";
   const playable = canPlayAudio(asset);
+  const mode = player.modeFor(asset);
   const duration = active && player.duration > 0 ? player.duration : (asset.durationMs ?? 0) / 1000;
   const currentTime = active ? player.currentTime : 0;
 
@@ -98,15 +99,15 @@ export function AudioCardPlayer({ asset, onActivate }: { asset: Asset; onActivat
         </button>
         <span className="audio-card-time">{formatAudioTime(currentTime)} / {formatAudioTime(duration)}</span>
         <button
-          className={`audio-card-loop ${player.mode === "loop" ? "active" : ""}`}
+          className={`audio-card-loop ${mode === "loop" ? "active" : ""}`}
           type="button"
           onClick={(event) => {
             event.stopPropagation();
-            player.setMode(player.mode === "loop" ? "once" : "loop");
+            player.setMode(asset, mode === "loop" ? "once" : "loop");
           }}
-          aria-label={player.mode === "loop" ? "切换为单次播放" : "切换为循环播放"}
-          aria-pressed={player.mode === "loop"}
-          title={player.mode === "loop" ? "循环播放" : "单次播放"}
+          aria-label={mode === "loop" ? "切换为单次播放" : "切换为循环播放"}
+          aria-pressed={mode === "loop"}
+          title={mode === "loop" ? "循环播放（仅当前音频）" : "单次播放（仅当前音频）"}
         >
           <Repeat1 size={13} />
         </button>
@@ -123,6 +124,7 @@ export function AudioDetailPlayer({ asset }: { asset: Asset }) {
   const playing = active && player.status === "playing";
   const loading = active && player.status === "loading";
   const playable = canPlayAudio(asset);
+  const mode = player.modeFor(asset);
   const duration = active && player.duration > 0 ? player.duration : (asset.durationMs ?? 0) / 1000;
   const currentTime = active ? player.currentTime : 0;
 
@@ -169,17 +171,17 @@ export function AudioDetailPlayer({ asset }: { asset: Asset }) {
       <div className="audio-playback-mode" aria-label="播放模式">
         <button
           type="button"
-          className={player.mode === "once" ? "active" : ""}
-          onClick={() => player.setMode("once")}
-          aria-pressed={player.mode === "once"}
+          className={mode === "once" ? "active" : ""}
+          onClick={() => player.setMode(asset, "once")}
+          aria-pressed={mode === "once"}
         >
           单次播放
         </button>
         <button
           type="button"
-          className={player.mode === "loop" ? "active" : ""}
-          onClick={() => player.setMode("loop")}
-          aria-pressed={player.mode === "loop"}
+          className={mode === "loop" ? "active" : ""}
+          onClick={() => player.setMode(asset, "loop")}
+          aria-pressed={mode === "loop"}
         >
           <Repeat1 size={12} /> 循环播放
         </button>
