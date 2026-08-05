@@ -1,4 +1,4 @@
-export const MEDIA_PLAYBACK_STARTED_EVENT = "mavo-media-playback-started";
+export const MEDIA_PLAYBACK_STARTED_EVENT = "caevir-media-playback-started";
 
 export function announceMediaPlayback(playerId: string) {
   window.dispatchEvent(new CustomEvent(MEDIA_PLAYBACK_STARTED_EVENT, { detail: { playerId } }));

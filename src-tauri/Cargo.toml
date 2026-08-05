@@ -1,12 +1,12 @@
 [package]
-name = "mavo"
+name = "caevir"
 version = "0.1.0"
-description = "Mavo desktop digital asset manager"
+description = "Caevir desktop digital asset manager"
 authors = ["Amipedia"]
 edition = "2021"
 
 [lib]
-name = "mavo_lib"
+name = "caevir_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

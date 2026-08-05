@@ -50,7 +50,7 @@ fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     {
         use std::os::windows::process::CommandExt;
 
-        // Mavo is a GUI application: console child processes must stay invisible.
+        // Caevir is a GUI application: console child processes must stay invisible.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
@@ -1345,7 +1345,7 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
-    let connection = open_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = open_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let limit = query.limit.unwrap_or(200).clamp(1, 500);
     let offset = query.offset.unwrap_or(0);
     let (where_sql, values) = build_asset_where(&query);
@@ -1516,7 +1516,7 @@ fn get_asset_facets_blocking(query: AssetQuery, app: AppHandle) -> Result<AssetF
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let mut kind_query = query.clone();
     kind_query.kinds = None;
     kind_query.availability = Some("available".to_string());
@@ -1715,7 +1715,7 @@ fn get_asset_directory_tree_blocking(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let directories = {
         let mut statement = connection
             .prepare(
@@ -1836,7 +1836,7 @@ fn get_tag_catalog(include_archived: Option<bool>, app: AppHandle) -> Result<Tag
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let groups = {
         let mut statement = connection
             .prepare(
@@ -1917,7 +1917,7 @@ fn save_tag_group(group_id: Option<i64>, name: String, app: AppHandle) -> Result
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let timestamp = now_ms() as i64;
     if let Some(id) = group_id {
         connection
@@ -1951,7 +1951,7 @@ fn delete_tag_group(group_id: i64, app: AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let tag_count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM tags WHERE group_id = ?1",
@@ -1975,7 +1975,7 @@ fn create_tag(input: TagInput, app: AppHandle) -> Result<i64, String> {
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let mut connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
@@ -2007,7 +2007,7 @@ fn update_tag(tag_id: i64, input: TagInput, app: AppHandle) -> Result<(), String
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let mut connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     if !input.scopes.is_empty() {
         let placeholders = vec!["?"; input.scopes.len()].join(",");
         let sql = format!(
@@ -2055,7 +2055,7 @@ fn set_tag_archived(tag_id: i64, archived: bool, app: AppHandle) -> Result<(), S
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     connection
         .execute(
             "UPDATE tags SET archived = ?1, updated_at_ms = ?2 WHERE id = ?3",
@@ -2073,7 +2073,7 @@ fn delete_tag(tag_id: i64, app: AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let mut connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
@@ -2104,7 +2104,7 @@ fn merge_tags(source_tag_id: i64, target_tag_id: i64, app: AppHandle) -> Result<
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let mut connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
@@ -2188,7 +2188,7 @@ fn set_asset_tags(asset_ids: Vec<i64>, tag_ids: Vec<i64>, app: AppHandle) -> Res
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let mut connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let assets = validate_tag_assignment(&connection, &asset_ids, &tag_ids)?;
     let transaction = connection
         .transaction()
@@ -2226,7 +2226,7 @@ fn mutate_asset_tags(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let mut connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let mut connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let assets = if operation == "add" {
         validate_tag_assignment(&connection, &asset_ids, &tag_ids)?
     } else {
@@ -2268,7 +2268,7 @@ fn list_smart_views(app: AppHandle) -> Result<Vec<SmartView>, String> {
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let mut statement = connection
         .prepare("SELECT id, name, query_json, updated_at_ms FROM smart_views ORDER BY name COLLATE NOCASE")
         .map_err(|error| error.to_string())?;
@@ -2299,7 +2299,7 @@ fn save_smart_view(name: String, query: AssetQuery, app: AppHandle) -> Result<()
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let json = serde_json::to_string(&query).map_err(|error| error.to_string())?;
     let timestamp = now_ms() as i64;
     connection
@@ -2319,7 +2319,7 @@ fn delete_smart_view(view_id: i64, app: AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     connection
         .execute("DELETE FROM smart_views WHERE id = ?1", params![view_id])
         .map_err(|error| error.to_string())?;
@@ -2331,7 +2331,7 @@ fn indexed_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String>
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let path: String = connection
         .query_row(
             "SELECT path FROM indexed_assets WHERE rowid = ?1 AND availability = 'available'",
@@ -2351,7 +2351,7 @@ fn indexed_media_asset(asset_id: i64, app: &AppHandle) -> Result<(PathBuf, Strin
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let (path, kind): (String, String) = connection
         .query_row(
             "SELECT path, kind FROM indexed_assets
@@ -2894,7 +2894,7 @@ fn rename_asset(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let renamed = rename_indexed_asset(&connection, asset_id, &new_stem)?;
     let _ = app.emit("asset-index-changed", ());
     Ok(renamed)
@@ -2959,7 +2959,7 @@ fn update_asset_metadata(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let updated = connection
         .execute(
             "UPDATE indexed_assets
@@ -2987,7 +2987,7 @@ fn extract_asset_author_blocking(asset_id: i64, app: AppHandle) -> Result<AssetM
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
     let (path, author, author_status): (String, String, String) = connection
         .query_row(
             "SELECT path, author, author_status FROM indexed_assets
@@ -3058,7 +3058,7 @@ fn relink_asset(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let database_path = app_data_dir.join("mavo-index.sqlite3");
+    let database_path = app_data_dir.join("caevir-index.sqlite3");
     let connection = setup_database(&database_path)?;
     let metadata_status = initial_metadata_status(&extension);
     let loudness_status = initial_loudness_status(&extension);
@@ -3099,7 +3099,7 @@ fn remove_asset_from_index(asset_id: i64, app: AppHandle) -> Result<(), String> 
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let database_path = app_data_dir.join("mavo-index.sqlite3");
+    let database_path = app_data_dir.join("caevir-index.sqlite3");
     let connection = setup_database(&database_path)?;
     let thumbnail: Option<String> = connection
         .query_row(
@@ -3155,7 +3155,7 @@ async fn scan_duplicates(app: AppHandle) -> Result<DuplicateScanSummary, String>
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let database_path = app_data_dir.join("mavo-index.sqlite3");
+    let database_path = app_data_dir.join("caevir-index.sqlite3");
     tauri::async_runtime::spawn_blocking(move || {
         let connection = setup_database(&database_path)?;
         let candidates: Vec<(i64, String, i64)> = {
@@ -4607,7 +4607,7 @@ fn start_scan(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
-    let database_path = app_data_dir.join("mavo-index.sqlite3");
+    let database_path = app_data_dir.join("caevir-index.sqlite3");
     let thumbnail_dir = app_data_dir.join("thumbnails");
     let roots = resolve_roots(&request)?;
     register_scan_roots(&database_path, &roots)?;
@@ -4699,7 +4699,7 @@ async fn enrich_pending_previews(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
-    let database_path = app_data_dir.join("mavo-index.sqlite3");
+    let database_path = app_data_dir.join("caevir-index.sqlite3");
     let thumbnail_dir = app_data_dir.join("thumbnails");
     let task_manager = task_manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -4752,7 +4752,7 @@ fn get_background_tasks_paused(manager: State<'_, BackgroundTaskManager>) -> boo
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .register_asynchronous_uri_scheme_protocol("mavo-media", |context, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("caevir-media", |context, request, responder| {
             let app = context.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 responder.respond(media_stream_response(&app, &request));
@@ -4775,7 +4775,7 @@ pub fn run() {
             }
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
-            let database_path = app_data_dir.join("mavo-index.sqlite3");
+            let database_path = app_data_dir.join("caevir-index.sqlite3");
             let thumbnail_dir = app_data_dir.join("thumbnails");
             initialize_database(&database_path).map_err(std::io::Error::other)?;
             let watch_manager = app.state::<WatchManager>();
@@ -4857,7 +4857,7 @@ pub fn run() {
             cancel_scan
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Mavo");
+        .expect("error while running Caevir");
 }
 
 #[cfg(test)]
@@ -5122,7 +5122,7 @@ mod tests {
     }
 
     fn test_workspace(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("mavo-{name}-{}", create_scan_id()))
+        std::env::temp_dir().join(format!("caevir-{name}-{}", create_scan_id()))
     }
 
     #[test]
@@ -5151,7 +5151,7 @@ mod tests {
         let validated = validated_asset_metadata(AssetMetadataInput {
             original_source_method: "  官方网站  ".to_string(),
             original_source_url: "  https://example.com/assets/42  ".to_string(),
-            author: "  Mavo Studio  ".to_string(),
+            author: "  Caevir Studio  ".to_string(),
         })
         .unwrap();
         assert_eq!(validated.original_source_method, "官方网站");
@@ -5159,7 +5159,7 @@ mod tests {
             validated.original_source_url,
             "https://example.com/assets/42"
         );
-        assert_eq!(validated.author, "Mavo Studio");
+        assert_eq!(validated.author, "Caevir Studio");
 
         for url in [
             "example.com/file",

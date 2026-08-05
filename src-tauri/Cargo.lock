@@ -242,6 +242,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "caevir"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ignore",
+ "image",
+ "notify",
+ "psd",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "trash",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "cairo-rs"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1952,25 +1971,6 @@ dependencies = [
  "log",
  "tendril",
  "web_atoms",
-]
-
-[[package]]
-name = "mavo"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ignore",
- "image",
- "notify",
- "psd",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "trash",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

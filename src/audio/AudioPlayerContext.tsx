@@ -57,7 +57,7 @@ interface PendingPlayback {
 
 const AudioPlayerContext = createContext<AudioPlayerValue | undefined>(undefined);
 const AudioSequenceContext = createContext<AudioSequenceValue | undefined>(undefined);
-const PLAYBACK_MODES_KEY = "mavo-audio-playback-modes";
+const PLAYBACK_MODES_KEY = "caevir-audio-playback-modes";
 
 function playbackModeKey(asset: Asset) {
   return asset.assetUid ?? asset.id;
@@ -75,7 +75,7 @@ function savedPlaybackModes(): Record<string, AudioPlaybackMode> {
 
 function savedVolume() {
   try {
-    const saved = window.localStorage.getItem("mavo-audio-volume");
+    const saved = window.localStorage.getItem("caevir-audio-volume");
     if (saved === null) return 1;
     const value = Number(saved);
     return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1;
@@ -357,7 +357,7 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     if (audioRef.current) audioRef.current.volume = normalized;
     setVolumeState(normalized);
     try {
-      window.localStorage.setItem("mavo-audio-volume", String(normalized));
+      window.localStorage.setItem("caevir-audio-volume", String(normalized));
     } catch {
       // Playback still works if persistent storage is unavailable.
     }

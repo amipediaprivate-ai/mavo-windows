@@ -29,13 +29,13 @@ export function canPlayAnimatedImage(asset: Asset) {
 export function audioPlaybackUrl(asset: Asset) {
   const assetId = indexedAssetId(asset);
   if (assetId === undefined || asset.kind !== "音频") throw new Error("该资源没有可播放的本地音频");
-  return convertFileSrc(`indexed-${assetId}`, "mavo-media");
+  return convertFileSrc(`indexed-${assetId}`, "caevir-media");
 }
 
 export function videoPlaybackUrl(asset: Asset) {
   const assetId = indexedAssetId(asset);
   if (assetId === undefined || asset.kind !== "视频") throw new Error("该资源没有可播放的本地视频");
-  return convertFileSrc(`indexed-${assetId}`, "mavo-media");
+  return convertFileSrc(`indexed-${assetId}`, "caevir-media");
 }
 
 export async function loadOriginalAsset(asset: Asset) {

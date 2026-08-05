@@ -233,7 +233,7 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
     try {
       await mutateProject(() => moveProject(activeProject.id, selected), "项目位置已调整");
     } catch {
-      // mutateProject already surfaces the operation error in Mavo.
+      // mutateProject already surfaces the operation error in Caevir.
     }
   };
 
@@ -244,7 +244,7 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
     try {
       await mutateProject(() => relinkProject(activeProject.id, selected), "项目已重新定位");
     } catch {
-      // mutateProject already surfaces the operation error in Mavo.
+      // mutateProject already surfaces the operation error in Caevir.
     }
   };
 

@@ -16,7 +16,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error("Mavo 界面渲染失败", error, errorInfo);
+    console.error("Caevir 界面渲染失败", error, errorInfo);
   }
 
   render() {

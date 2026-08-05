@@ -13,5 +13,5 @@
   <rect x="28" y="28" width="456" height="456" rx="128" fill="url(#background)"/>
   <ellipse cx="256" cy="256" rx="184" ry="86" transform="rotate(-34 256 256)" fill="none" stroke="#ffffff" stroke-opacity=".28" stroke-width="14"/>
   <circle cx="405" cy="160" r="18" fill="#ffffff" fill-opacity=".85"/>
-  <path d="M132 353 170 159c4-20 18-31 38-31h17c17 0 30 8 37 24l43 101 46-101c7-16 20-24 37-24h15c23 0 38 19 33 42l-40 183h-61l30-135-52 112c-7 16-19 23-35 23h-9c-16 0-28-7-35-23l-47-111-25 134h-60Z" fill="url(#letter)"/>
+  <path d="M393 177c-29-39-73-61-127-61-88 0-153 61-153 140s65 140 153 140c54 0 98-22 127-61l-52-37c-17 23-42 36-75 36-50 0-85-32-85-78s35-78 85-78c33 0 58 13 75 36l52-37Z" fill="url(#letter)"/>
 </svg>

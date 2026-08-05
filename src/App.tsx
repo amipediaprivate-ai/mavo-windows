@@ -1025,8 +1025,8 @@ export default function App() {
         />
       )}
       <div className="minimum-size-warning">
-        <div className="brand-mark"><span>M</span></div>
-        <h2>请放大窗口以使用 Mavo</h2>
+        <div className="brand-mark"><span>C</span></div>
+        <h2>请放大窗口以使用 Caevir</h2>
         <p>资产管理工作区需要至少 920px 的显示宽度。</p>
       </div>
     </div>

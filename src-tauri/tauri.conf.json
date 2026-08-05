@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Mavo",
+  "productName": "Caevir",
   "version": "0.1.0",
-  "identifier": "ai.amipedia.mavo",
+  "identifier": "ai.amipedia.caevir",
   "build": {
     "beforeDevCommand": "pnpm.cmd prepare:ffmpeg && pnpm.cmd dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [{
       "label": "main",
-      "title": "Mavo",
+      "title": "Caevir",
       "width": 1440,
       "height": 900,
       "minWidth": 1040,

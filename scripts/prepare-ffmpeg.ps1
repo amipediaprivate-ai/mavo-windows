@@ -5,7 +5,7 @@ $preparationRevision = "3"
 $releaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $destination = Join-Path $projectRoot "src-tauri\resources\ffmpeg"
-$marker = Join-Path $destination ".mavo-ffmpeg-ready"
+$marker = Join-Path $destination ".caevir-ffmpeg-ready"
 $ffmpegExe = Join-Path $destination "ffmpeg.exe"
 $ffprobeExe = Join-Path $destination "ffprobe.exe"
 
@@ -26,7 +26,7 @@ if (-not $checksumLine) {
 $expectedHash = ($checksumLine -split "\s+")[0].ToLowerInvariant()
 $markerValue = "$expectedHash`:$preparationRevision"
 
-$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "mavo-ffmpeg-$PID"
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "caevir-ffmpeg-$PID"
 $archivePath = Join-Path $tempRoot $archiveName
 $extractPath = Join-Path $tempRoot "extract"
 

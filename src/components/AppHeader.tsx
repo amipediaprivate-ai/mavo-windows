@@ -122,13 +122,13 @@ export function AppHeader({
   return (
     <>
       <header className="topbar">
-        <div className="brand" aria-label="Mavo 首页">
+        <div className="brand" aria-label="Caevir 首页">
           <div className="brand-mark" aria-hidden="true">
             <span className="brand-orbit" />
-            <span>M</span>
+            <span>C</span>
           </div>
           <div className="brand-copy">
-            <strong>Mavo</strong>
+            <strong>Caevir</strong>
             <span>管理每一项数字资产</span>
           </div>
         </div>

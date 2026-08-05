@@ -203,7 +203,7 @@ fn project_database(app: &AppHandle) -> Result<Connection, String> {
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
-    setup_database(&app_data_dir.join("mavo-index.sqlite3"))
+    setup_database(&app_data_dir.join("caevir-index.sqlite3"))
 }
 
 fn validate_project_name(value: &str) -> Result<String, String> {
@@ -464,7 +464,7 @@ fn create_materialized_copy(
     fs::create_dir_all(&directory).map_err(|error| format!("无法创建项目子目录：{error}"))?;
     let destination = unique_destination(&directory, &source.name);
     let operation = operation_id("project-copy");
-    let temporary = directory.join(format!(".mavo-copy-{operation}.part"));
+    let temporary = directory.join(format!(".caevir-copy-{operation}.part"));
     let timestamp = now_ms() as i64;
     connection
         .execute(
@@ -1753,7 +1753,7 @@ mod tests {
 
     #[test]
     fn creates_non_conflicting_destination_names() {
-        let workspace = std::env::temp_dir().join(operation_id("mavo-project-name-test"));
+        let workspace = std::env::temp_dir().join(operation_id("caevir-project-name-test"));
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("hero.png"), b"one").unwrap();
         fs::write(workspace.join("hero (2).png"), b"two").unwrap();
