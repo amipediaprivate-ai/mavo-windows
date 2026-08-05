@@ -16,6 +16,12 @@ export interface IndexedAssetRecord {
   width?: number | null;
   height?: number | null;
   durationMs?: number | null;
+  audioSampleRate?: number | null;
+  audioBitDepth?: number | null;
+  audioChannels?: number | null;
+  audioCodec?: string | null;
+  audioEndianness?: "little" | "big" | "not_applicable" | "unknown" | null;
+  audioFrameSize?: number | null;
   thumbnailPath?: string;
   metadataStatus: "pending" | "ready" | "unsupported";
   integratedLufs?: number | null;
@@ -242,6 +248,12 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     width: record.width ?? undefined,
     height: record.height ?? undefined,
     durationMs: record.durationMs ?? undefined,
+    audioSampleRate: record.audioSampleRate ?? undefined,
+    audioBitDepth: record.audioBitDepth ?? undefined,
+    audioChannels: record.audioChannels ?? undefined,
+    audioCodec: record.audioCodec ?? undefined,
+    audioEndianness: record.audioEndianness ?? undefined,
+    audioFrameSize: record.audioFrameSize ?? undefined,
     metadataStatus: record.metadataStatus,
     integratedLufs: record.integratedLufs ?? undefined,
     truePeakDbtp: record.truePeakDbtp ?? undefined,

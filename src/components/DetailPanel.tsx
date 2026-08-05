@@ -60,6 +60,32 @@ function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
   const [author, setAuthor] = useState(asset.author || "");
   const [error, setError] = useState("");
 
+  const unavailableAudioValue = asset.metadataStatus === "pending"
+    ? "分析中…"
+    : asset.metadataStatus === "unsupported"
+      ? "无法分析"
+      : "未提供";
+  const sampleRate = asset.audioSampleRate === undefined
+    ? unavailableAudioValue
+    : `${(asset.audioSampleRate / 1000).toLocaleString("zh-CN", { maximumFractionDigits: 3 })} kHz`;
+  const bitDepth = asset.audioBitDepth === undefined ? unavailableAudioValue : `${asset.audioBitDepth} 位`;
+  const channels = asset.audioChannels === undefined
+    ? unavailableAudioValue
+    : asset.audioChannels === 1
+      ? "1（单声道）"
+      : asset.audioChannels === 2
+        ? "2（立体声）"
+        : `${asset.audioChannels} 声道`;
+  const endianness = asset.audioEndianness === "little"
+    ? "小端序（Little-endian）"
+    : asset.audioEndianness === "big"
+      ? "大端序（Big-endian）"
+      : asset.audioEndianness === "not_applicable"
+        ? "不适用"
+        : asset.audioEndianness === "unknown"
+          ? "未知"
+          : unavailableAudioValue;
+
   useEffect(() => {
     if (editing) return;
     setSourceMethod(asset.originalSourceMethod || asset.source);
@@ -151,6 +177,16 @@ function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
         <div className="asset-more-info-content">
           {editing ? <label><span>作者</span><input value={author} maxLength={200} disabled={saving} onChange={(event) => setAuthor(event.target.value)} placeholder="未获取到时可手动填写" /></label> : <DetailRow label="作者" value={asset.author || "未填写"} />}
           {!editing && asset.authorStatus === "pending" && <small>正在尝试从文件元数据获取作者…</small>}
+          {asset.kind === "音频" && (
+            <>
+              <DetailRow label="采样率" value={sampleRate} />
+              <DetailRow label="位深度" value={bitDepth} />
+              <DetailRow label="声道" value={channels} />
+              <DetailRow label="编码格式" value={asset.audioCodec || unavailableAudioValue} />
+              <DetailRow label="字节序" value={endianness} />
+              <DetailRow label="帧大小" value={asset.audioFrameSize === undefined ? unavailableAudioValue : `${asset.audioFrameSize} 字节/帧`} />
+            </>
+          )}
         </div>
       </details>
 

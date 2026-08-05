@@ -39,6 +39,12 @@ export interface Asset {
   width?: number;
   height?: number;
   durationMs?: number;
+  audioSampleRate?: number;
+  audioBitDepth?: number;
+  audioChannels?: number;
+  audioCodec?: string;
+  audioEndianness?: "little" | "big" | "not_applicable" | "unknown";
+  audioFrameSize?: number;
   metadataStatus?: "pending" | "ready" | "unsupported";
   integratedLufs?: number;
   truePeakDbtp?: number;

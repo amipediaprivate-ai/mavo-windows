@@ -401,6 +401,12 @@ struct IndexedAssetSummary {
     width: Option<i64>,
     height: Option<i64>,
     duration_ms: Option<i64>,
+    audio_sample_rate: Option<i64>,
+    audio_bit_depth: Option<i64>,
+    audio_channels: Option<i64>,
+    audio_codec: Option<String>,
+    audio_endianness: Option<String>,
+    audio_frame_size: Option<i64>,
     thumbnail_path: Option<String>,
     metadata_status: String,
     integrated_lufs: Option<f64>,
@@ -438,6 +444,25 @@ struct AudioLoudness {
     true_peak_dbtp: Option<f64>,
     loudness_range_lu: Option<f64>,
     threshold_lufs: Option<f64>,
+}
+
+#[derive(Debug, PartialEq)]
+struct AudioStreamInfo {
+    sample_rate: Option<i64>,
+    bit_depth: Option<i64>,
+    channels: Option<i64>,
+    codec: Option<String>,
+    endianness: Option<String>,
+    frame_size: Option<i64>,
+}
+
+#[derive(Debug, PartialEq)]
+struct MediaEnrichment {
+    width: Option<i64>,
+    height: Option<i64>,
+    duration_ms: Option<i64>,
+    thumbnail_path: Option<String>,
+    audio: Option<AudioStreamInfo>,
 }
 
 #[derive(Serialize)]
@@ -830,6 +855,12 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
         ("width", "INTEGER"),
         ("height", "INTEGER"),
         ("duration_ms", "INTEGER"),
+        ("audio_sample_rate", "INTEGER"),
+        ("audio_bit_depth", "INTEGER"),
+        ("audio_channels", "INTEGER"),
+        ("audio_codec", "TEXT"),
+        ("audio_endianness", "TEXT"),
+        ("audio_frame_size", "INTEGER"),
         ("thumbnail_path", "TEXT"),
         ("metadata_status", "TEXT NOT NULL DEFAULT 'pending'"),
         ("availability", "TEXT NOT NULL DEFAULT 'available'"),
@@ -954,6 +985,41 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
             Ok(())
         })();
         if let Err(error) = normalization {
+            let _ = connection.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        connection
+            .execute_batch("COMMIT")
+            .map_err(|error| error.to_string())?;
+    }
+    let audio_stream_info_backfilled: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'audio_stream_info_v1')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !audio_stream_info_backfilled {
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| error.to_string())?;
+        let backfill = (|| -> Result<(), String> {
+            connection
+                .execute(
+                    "UPDATE indexed_assets SET metadata_status = 'pending', metadata_error = NULL
+                     WHERE kind = '音频' AND availability = 'available'",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "INSERT INTO app_metadata (key, value) VALUES ('audio_stream_info_v1', '1')",
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = backfill {
             let _ = connection.execute_batch("ROLLBACK");
             return Err(error);
         }
@@ -1168,6 +1234,12 @@ fn flush_batch(
                    width = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.width END,
                    height = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.height END,
                    duration_ms = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.duration_ms END,
+                   audio_sample_rate = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.audio_sample_rate END,
+                   audio_bit_depth = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.audio_bit_depth END,
+                   audio_channels = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.audio_channels END,
+                   audio_codec = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.audio_codec END,
+                   audio_endianness = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.audio_endianness END,
+                   audio_frame_size = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.audio_frame_size END,
                    content_hash = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.content_hash END,
                    hash_modified_ms = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN NULL ELSE indexed_assets.hash_modified_ms END,
                    metadata_status = CASE WHEN indexed_assets.modified_ms <> excluded.modified_ms THEN excluded.metadata_status ELSE indexed_assets.metadata_status END,
@@ -1365,7 +1437,8 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
     let order_sql = asset_order_sql(query.sort.as_deref());
     let sql = format!(
         "SELECT rowid, asset_uid, path, name, extension, kind, size_bytes, modified_ms, indexed_at_ms,
-                width, height, duration_ms, thumbnail_path, metadata_status,
+                width, height, duration_ms, audio_sample_rate, audio_bit_depth, audio_channels,
+                audio_codec, audio_endianness, audio_frame_size, thumbnail_path, metadata_status,
                 integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_status, availability,
                 original_source_method, original_source_url, author, author_status
          FROM indexed_assets WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
@@ -1397,17 +1470,23 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
                 width: row.get(9)?,
                 height: row.get(10)?,
                 duration_ms: row.get(11)?,
-                thumbnail_path: row.get(12)?,
-                metadata_status: row.get(13)?,
-                integrated_lufs: row.get(14)?,
-                true_peak_dbtp: row.get(15)?,
-                loudness_range_lu: row.get(16)?,
-                loudness_status: row.get(17)?,
-                availability: row.get(18)?,
-                original_source_method: row.get(19)?,
-                original_source_url: row.get(20)?,
-                author: row.get(21)?,
-                author_status: row.get(22)?,
+                audio_sample_rate: row.get(12)?,
+                audio_bit_depth: row.get(13)?,
+                audio_channels: row.get(14)?,
+                audio_codec: row.get(15)?,
+                audio_endianness: row.get(16)?,
+                audio_frame_size: row.get(17)?,
+                thumbnail_path: row.get(18)?,
+                metadata_status: row.get(19)?,
+                integrated_lufs: row.get(20)?,
+                true_peak_dbtp: row.get(21)?,
+                loudness_range_lu: row.get(22)?,
+                loudness_status: row.get(23)?,
+                availability: row.get(24)?,
+                original_source_method: row.get(25)?,
+                original_source_url: row.get(26)?,
+                author: row.get(27)?,
+                author_status: row.get(28)?,
                 tags: Vec::new(),
             })
         })
@@ -3668,18 +3747,71 @@ fn generate_image_preview(path: &Path, thumbnail_path: &Path) -> Result<(u32, u3
     .unwrap_or_else(|payload| Err(format!("预览解码异常：{}", panic_message(payload))))
 }
 
+fn positive_i64_field(value: &serde_json::Value, key: &str) -> Option<i64> {
+    value
+        .get(key)
+        .and_then(|field| {
+            field
+                .as_i64()
+                .or_else(|| field.as_str().and_then(|raw| raw.parse::<i64>().ok()))
+        })
+        .filter(|field| *field > 0)
+}
+
+fn audio_stream_info(stream: &serde_json::Value) -> AudioStreamInfo {
+    let sample_rate = positive_i64_field(stream, "sample_rate");
+    let bit_depth = positive_i64_field(stream, "bits_per_raw_sample")
+        .or_else(|| positive_i64_field(stream, "bits_per_sample"));
+    let channels = positive_i64_field(stream, "channels");
+    let codec = stream
+        .get("codec_name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let endianness = codec.as_deref().map(|codec| {
+        if bit_depth.is_some_and(|depth| depth <= 8) {
+            "not_applicable"
+        } else if !codec.starts_with("pcm_") {
+            "not_applicable"
+        } else if codec.ends_with("le") {
+            "little"
+        } else if codec.ends_with("be") {
+            "big"
+        } else {
+            "unknown"
+        }
+        .to_string()
+    });
+    let frame_size = codec
+        .as_deref()
+        .filter(|codec| codec.starts_with("pcm_"))
+        .and_then(|_| bit_depth.zip(channels))
+        .and_then(|(depth, channel_count)| {
+            let frame_bits = depth.checked_mul(channel_count)?;
+            (frame_bits % 8 == 0).then_some(frame_bits / 8)
+        });
+    AudioStreamInfo {
+        sample_rate,
+        bit_depth,
+        channels,
+        codec,
+        endianness,
+        frame_size,
+    }
+}
+
 fn enrich_media_file(
     path: &Path,
     kind: &str,
     thumbnail_path: &Path,
-) -> Result<(Option<i64>, Option<i64>, i64, Option<String>), String> {
+) -> Result<MediaEnrichment, String> {
     let mut probe = media_command("ffprobe");
     probe
         .args([
             "-v",
             "error",
             "-show_entries",
-            "stream=width,height:format=duration",
+            "stream=codec_type,codec_name,width,height,sample_rate,bits_per_sample,bits_per_raw_sample,channels:format=duration",
             "-of",
             "json",
         ])
@@ -3708,6 +3840,25 @@ fn enrich_media_file(
     let height = video_stream
         .and_then(|stream| stream.get("height"))
         .and_then(|value| value.as_i64());
+    let audio = (kind == "音频").then(|| {
+        value
+            .get("streams")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|streams| {
+                streams.iter().find(|stream| {
+                    stream.get("codec_type").and_then(serde_json::Value::as_str) == Some("audio")
+                })
+            })
+            .map(audio_stream_info)
+            .unwrap_or(AudioStreamInfo {
+                sample_rate: None,
+                bit_depth: None,
+                channels: None,
+                codec: None,
+                endianness: None,
+                frame_size: None,
+            })
+    });
     let duration = value
         .get("format")
         .and_then(|format| format.get("duration"))
@@ -3758,7 +3909,13 @@ fn enrich_media_file(
                 .is_file()
                 .then(|| thumbnail_path.to_string_lossy().into_owned())
         });
-    Ok((width, height, duration, generated))
+    Ok(MediaEnrichment {
+        width,
+        height,
+        duration_ms: Some(duration),
+        thumbnail_path: generated,
+        audio,
+    })
 }
 
 fn parse_loudness_metric(value: &serde_json::Value, key: &str) -> Result<Option<f64>, String> {
@@ -4145,20 +4302,16 @@ fn enrich_pending_images(
                                 .unwrap_or_else(|payload| {
                                     Err(format!("媒体解码异常：{}", panic_message(payload)))
                                 })
-                                .map(
-                                    |(width, height, duration_ms, generated_thumbnail)| {
-                                        (width, height, Some(duration_ms), generated_thumbnail)
-                                    },
-                                )
                             } else {
                                 generate_image_preview(Path::new(&path), &thumbnail_path).map(
-                                    |(width, height)| {
-                                        (
-                                            Some(width as i64),
-                                            Some(height as i64),
-                                            None,
-                                            Some(thumbnail_path.to_string_lossy().into_owned()),
-                                        )
+                                    |(width, height)| MediaEnrichment {
+                                        width: Some(width as i64),
+                                        height: Some(height as i64),
+                                        duration_ms: None,
+                                        thumbnail_path: Some(
+                                            thumbnail_path.to_string_lossy().into_owned(),
+                                        ),
+                                        audio: None,
                                     },
                                 )
                             };
@@ -4188,15 +4341,46 @@ fn enrich_pending_images(
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned());
             let item_result = match enrichment {
-                Ok((width, height, duration_ms, generated_thumbnail)) => transaction
-                    .execute(
-                        "UPDATE indexed_assets SET width = ?1, height = ?2, duration_ms = ?3,
-                         thumbnail_path = ?4, metadata_status = 'ready', metadata_error = NULL
-                         WHERE path = ?5 AND modified_ms = ?6",
-                        params![width, height, duration_ms, generated_thumbnail, path, modified_ms],
-                    )
-                    .map(|_| ())
-                    .map_err(|error| error.to_string()),
+                Ok(enrichment) => {
+                    let (sample_rate, bit_depth, channels, codec, endianness, frame_size) =
+                        enrichment
+                            .audio
+                            .map(|audio| {
+                                (
+                                    audio.sample_rate,
+                                    audio.bit_depth,
+                                    audio.channels,
+                                    audio.codec,
+                                    audio.endianness,
+                                    audio.frame_size,
+                                )
+                            })
+                            .unwrap_or((None, None, None, None, None, None));
+                    transaction
+                        .execute(
+                            "UPDATE indexed_assets SET width = ?1, height = ?2, duration_ms = ?3,
+                             thumbnail_path = ?4, audio_sample_rate = ?5, audio_bit_depth = ?6,
+                             audio_channels = ?7, audio_codec = ?8, audio_endianness = ?9,
+                             audio_frame_size = ?10, metadata_status = 'ready', metadata_error = NULL
+                             WHERE path = ?11 AND modified_ms = ?12",
+                            params![
+                                enrichment.width,
+                                enrichment.height,
+                                enrichment.duration_ms,
+                                enrichment.thumbnail_path,
+                                sample_rate,
+                                bit_depth,
+                                channels,
+                                codec,
+                                endianness,
+                                frame_size,
+                                path,
+                                modified_ms,
+                            ],
+                        )
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }
                 Err(error) => transaction
                     .execute(
                         "UPDATE indexed_assets SET metadata_status = 'unsupported', metadata_error = ?1,
@@ -5654,15 +5838,21 @@ mod tests {
             .status()
             .unwrap();
         assert!(generated.success());
-        let (_, _, duration_ms, thumbnail_path) =
-            enrich_media_file(&audio, "音频", &thumbnail).unwrap();
-        assert!(duration_ms >= 900);
+        let enrichment = enrich_media_file(&audio, "音频", &thumbnail).unwrap();
+        assert!(enrichment.duration_ms.unwrap_or_default() >= 900);
         assert_eq!(
-            thumbnail_path.as_deref(),
+            enrichment.thumbnail_path.as_deref(),
             Some(thumbnail.to_string_lossy().as_ref())
         );
         assert!(thumbnail.is_file());
-        let loudness = analyze_audio_loudness(&audio, duration_ms).unwrap();
+        let audio_info = enrichment.audio.unwrap();
+        assert_eq!(audio_info.sample_rate, Some(44_100));
+        assert_eq!(audio_info.bit_depth, Some(16));
+        assert_eq!(audio_info.channels, Some(1));
+        assert_eq!(audio_info.codec.as_deref(), Some("pcm_s16le"));
+        assert_eq!(audio_info.endianness.as_deref(), Some("little"));
+        assert_eq!(audio_info.frame_size, Some(2));
+        let loudness = analyze_audio_loudness(&audio, enrichment.duration_ms.unwrap()).unwrap();
         assert!(loudness.integrated_lufs.is_some());
         assert!(loudness.true_peak_dbtp.is_some());
         fs::remove_dir_all(workspace).unwrap();
