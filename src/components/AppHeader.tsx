@@ -30,8 +30,8 @@ import type { BackgroundTask, SmartView } from "../lib/indexedAssets";
 import type { ScanScope } from "../types";
 
 interface AppHeaderProps {
-  activeSection: "资产" | "工具";
-  onSectionChange: (section: "资产" | "工具") => void;
+  activeSection: "资产" | "项目" | "工具";
+  onSectionChange: (section: "资产" | "项目" | "工具") => void;
   query: string;
   onQueryChange: (value: string) => void;
   activeModule: string;
@@ -138,7 +138,7 @@ export function AppHeader({
             <button
               key={item}
               className={item === activeSection ? "active" : ""}
-              onClick={() => item === "项目" ? onAction("项目模块正在建设中") : onSectionChange(item)}
+              onClick={() => onSectionChange(item)}
               aria-current={item === activeSection ? "page" : undefined}
             >
               {item}
@@ -152,8 +152,8 @@ export function AppHeader({
             type="search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            placeholder={activeSection === "工具" ? "搜索工具…" : "搜索名称、标签或文件夹…"}
-            aria-label={activeSection === "工具" ? "搜索工具" : "搜索所有资源"}
+            placeholder={activeSection === "工具" ? "搜索工具…" : activeSection === "项目" ? "搜索项目或项目路径…" : "搜索名称、标签或文件夹…"}
+            aria-label={activeSection === "工具" ? "搜索工具" : activeSection === "项目" ? "搜索项目" : "搜索所有资源"}
           />
           <span className="shortcut">Ctrl K</span>
         </label>

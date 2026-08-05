@@ -26,6 +26,7 @@ import { FilterSidebar } from "./components/FilterSidebar";
 import { ScanDialog } from "./components/ScanDialog";
 import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { TagManager } from "./components/TagManager";
+import { ProjectWorkspace } from "./components/ProjectWorkspace";
 import { assets as initialAssets } from "./data/assets";
 import {
   deleteSmartView,
@@ -102,10 +103,12 @@ interface AudioSequenceCursor {
 
 export default function App() {
   const audioSequence = useAudioSequence();
-  const [activeSection, setActiveSection] = useState<"资产" | "工具">("资产");
+  const [activeSection, setActiveSection] = useState<"资产" | "项目" | "工具">("资产");
   const [libraryAssets, setLibraryAssets] = useState(initialAssets);
   const [query, setQuery] = useState("");
   const [toolQuery, setToolQuery] = useState("");
+  const [projectQuery, setProjectQuery] = useState("");
+  const [projectRevision, setProjectRevision] = useState(0);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [activeModule, setActiveModule] = useState("全部");
   const [view, setView] = useState<AssetView>("grid");
@@ -783,12 +786,12 @@ export default function App() {
   }, [showToast]);
 
   return (
-    <div className={`app-shell ${activeSection === "工具" ? "tools-active" : ""}`}>
+    <div className={`app-shell ${activeSection !== "资产" ? "tools-active" : ""}`}>
       <AppHeader
         activeSection={activeSection}
         onSectionChange={setActiveSection}
-        query={activeSection === "工具" ? toolQuery : query}
-        onQueryChange={activeSection === "工具" ? setToolQuery : setQuery}
+        query={activeSection === "工具" ? toolQuery : activeSection === "项目" ? projectQuery : query}
+        onQueryChange={activeSection === "工具" ? setToolQuery : activeSection === "项目" ? setProjectQuery : setQuery}
         activeModule={activeModule}
         onModuleChange={handleModuleChange}
         categoryCounts={categoryCounts}
@@ -809,6 +812,8 @@ export default function App() {
 
       {activeSection === "工具" ? (
         <ToolsWorkspace query={toolQuery} onAction={showToast} />
+      ) : activeSection === "项目" ? (
+        <ProjectWorkspace query={projectQuery} onAction={showToast} onProjectsChanged={() => setProjectRevision((revision) => revision + 1)} />
       ) : activeModule === "标签管理" ? (
         <TagManager
           catalog={tagCatalog}
@@ -963,6 +968,8 @@ export default function App() {
             onCreateTag={handleCreateTag}
             onCreateTagGroup={handleCreateTagGroup}
             onFilterTag={(tagId) => setFilters((current) => ({ ...current, tags: current.tags.includes(tagId) ? current.tags : [...current.tags, tagId] }))}
+            projectRevision={projectRevision}
+            onProjectsChanged={() => setProjectRevision((revision) => revision + 1)}
           />
         )}
       </section>}

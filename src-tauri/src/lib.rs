@@ -37,6 +37,8 @@ use tauri::{
     AppHandle, Emitter, Manager, State,
 };
 
+mod projects;
+
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 static MEDIA_TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
 static MEDIA_ENRICHMENT_LOCK: Mutex<()> = Mutex::new(());
@@ -678,6 +680,7 @@ fn initialize_database(path: &Path) -> Result<Connection, String> {
         )
         .map_err(|error| error.to_string())?;
     migrate_indexed_assets(&connection)?;
+    projects::initialize_projects_database(&connection)?;
     setup_default_tags(&connection)?;
     connection
         .execute_batch("PRAGMA optimize=0x10002;")
@@ -821,6 +824,8 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
         ("loudness_version", "INTEGER NOT NULL DEFAULT 1"),
         ("directory_path", "TEXT NOT NULL DEFAULT ''"),
         ("directory_key", "TEXT NOT NULL DEFAULT ''"),
+        ("asset_scope", "TEXT NOT NULL DEFAULT 'library'"),
+        ("origin_asset_uid", "TEXT"),
     ];
     for (name, definition) in additions {
         if !columns.iter().any(|column| column == name) {
@@ -1013,7 +1018,11 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
               CREATE INDEX IF NOT EXISTS indexed_assets_pending_loudness_idx
                 ON indexed_assets(kind, availability, loudness_status, metadata_status, modified_ms DESC, path);
               CREATE INDEX IF NOT EXISTS indexed_assets_audio_directory_idx
-                ON indexed_assets(kind, availability, directory_key);",
+                ON indexed_assets(kind, availability, directory_key);
+              DROP INDEX IF EXISTS indexed_assets_scope_idx;
+              CREATE INDEX IF NOT EXISTS indexed_assets_project_scope_idx
+                ON indexed_assets(origin_asset_uid, availability)
+                WHERE asset_scope = 'project';",
         )
         .map_err(|error| error.to_string())?;
     setup_fts(connection)?;
@@ -1182,7 +1191,10 @@ fn flush_batch(
 
 fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
     let availability = query.availability.as_deref().unwrap_or("available");
-    let mut where_parts = vec!["availability = ?".to_string()];
+    let mut where_parts = vec![
+        "asset_scope = 'library'".to_string(),
+        "availability = ?".to_string(),
+    ];
     let mut values: Vec<Value> = vec![Value::Text(availability.to_string())];
 
     if let Some(search) = query
@@ -1293,7 +1305,7 @@ fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
         where_parts.push(
             "content_hash IS NOT NULL AND content_hash IN (
                SELECT content_hash FROM indexed_assets
-               WHERE availability = 'available' AND content_hash IS NOT NULL
+               WHERE asset_scope = 'library' AND availability = 'available' AND content_hash IS NOT NULL
                GROUP BY content_hash HAVING COUNT(*) > 1
              )"
             .to_string(),
@@ -1489,14 +1501,14 @@ fn get_asset_facets_blocking(query: AssetQuery, app: AppHandle) -> Result<AssetF
     let (folder_where, folder_values) = build_asset_where(&folder_query);
     let available_count: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM indexed_assets WHERE availability = 'available'",
+            "SELECT COUNT(*) FROM indexed_assets WHERE asset_scope = 'library' AND availability = 'available'",
             [],
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
     let missing_count: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM indexed_assets WHERE availability = 'missing'",
+            "SELECT COUNT(*) FROM indexed_assets WHERE asset_scope = 'library' AND availability = 'missing'",
             [],
             |row| row.get(0),
         )
@@ -1679,7 +1691,7 @@ fn get_asset_directory_tree_blocking(
             .prepare(
                 "SELECT directory_path, directory_key, scan_root
                  FROM indexed_assets
-                 WHERE kind = '音频' AND availability = 'available' AND directory_key <> ''
+                 WHERE asset_scope = 'library' AND kind = '音频' AND availability = 'available' AND directory_key <> ''
                  GROUP BY directory_path, directory_key, scan_root",
             )
             .map_err(|error| error.to_string())?;
@@ -3001,8 +3013,8 @@ async fn scan_duplicates(app: AppHandle) -> Result<DuplicateScanSummary, String>
         let candidates: Vec<(i64, String, i64)> = {
             let mut statement = connection.prepare(
                 "SELECT rowid, path, modified_ms FROM indexed_assets
-                 WHERE availability = 'available' AND size_bytes IN (
-                   SELECT size_bytes FROM indexed_assets WHERE availability = 'available'
+                 WHERE asset_scope = 'library' AND availability = 'available' AND size_bytes IN (
+                   SELECT size_bytes FROM indexed_assets WHERE asset_scope = 'library' AND availability = 'available'
                    GROUP BY size_bytes HAVING COUNT(*) > 1
                  ) ORDER BY size_bytes, path"
             ).map_err(|error| error.to_string())?;
@@ -3027,12 +3039,12 @@ async fn scan_duplicates(app: AppHandle) -> Result<DuplicateScanSummary, String>
         }
         let duplicate_groups: i64 = connection.query_row(
             "SELECT COUNT(*) FROM (SELECT content_hash FROM indexed_assets
-             WHERE availability = 'available' AND content_hash IS NOT NULL
+             WHERE asset_scope = 'library' AND availability = 'available' AND content_hash IS NOT NULL
              GROUP BY content_hash HAVING COUNT(*) > 1)", [], |row| row.get(0)
         ).map_err(|error| error.to_string())?;
         let duplicate_files: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM indexed_assets WHERE availability = 'available' AND content_hash IN (
-               SELECT content_hash FROM indexed_assets WHERE availability = 'available' AND content_hash IS NOT NULL
+            "SELECT COUNT(*) FROM indexed_assets WHERE asset_scope = 'library' AND availability = 'available' AND content_hash IN (
+               SELECT content_hash FROM indexed_assets WHERE asset_scope = 'library' AND availability = 'available' AND content_hash IS NOT NULL
                GROUP BY content_hash HAVING COUNT(*) > 1)", [], |row| row.get(0)
         ).map_err(|error| error.to_string())?;
         Ok(DuplicateScanSummary { hashed_files, duplicate_groups: duplicate_groups as u64, duplicate_files: duplicate_files as u64 })
@@ -4569,6 +4581,8 @@ pub fn run() {
                 )
                 .map_err(std::io::Error::other)?;
             let connection = setup_database(&database_path).map_err(std::io::Error::other)?;
+            projects::recover_project_file_operations(&connection)
+                .map_err(std::io::Error::other)?;
             let roots: Vec<PathBuf> = {
                 let mut statement =
                     connection.prepare("SELECT path FROM scan_roots WHERE enabled = 1")?;
@@ -4614,6 +4628,21 @@ pub fn run() {
             set_background_tasks_paused,
             get_background_tasks_paused,
             enrich_pending_previews,
+            projects::list_projects,
+            projects::create_project,
+            projects::rename_project,
+            projects::move_project,
+            projects::relink_project,
+            projects::open_project_folder,
+            projects::list_project_directories,
+            projects::create_project_directory,
+            projects::list_project_assets,
+            projects::list_asset_projects,
+            projects::add_asset_to_projects,
+            projects::update_project_asset,
+            projects::remove_asset_from_project,
+            projects::open_project_asset,
+            projects::open_project_asset_folder,
             start_scan,
             cancel_scan
         ])

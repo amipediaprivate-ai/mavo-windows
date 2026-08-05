@@ -18,6 +18,7 @@ import { AnimatedImagePlayer } from "./AnimatedImagePlayer";
 import { AssetThumbnail } from "./AssetThumbnail";
 import { VideoDetailPlayer } from "./VideoPlayer";
 import { TagPicker } from "./TagPicker";
+import { ProjectMembershipSection } from "./ProjectMembershipSection";
 
 interface DetailPanelProps {
   asset?: Asset;
@@ -33,6 +34,8 @@ interface DetailPanelProps {
   onCreateTag: (input: TagInput) => Promise<number>;
   onCreateTagGroup: (name: string) => Promise<number>;
   onFilterTag: (tagId: number) => void;
+  projectRevision: number;
+  onProjectsChanged: () => void;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -108,7 +111,7 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   return (
@@ -187,6 +190,10 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             </button>
             <button className="text-button" onClick={() => onAction("文件夹选择器已打开")}>＋ 添加到其他文件夹</button>
           </section>
+
+          {asset.id.startsWith("indexed-") && asset.assetUid && (
+            <ProjectMembershipSection asset={asset} revision={projectRevision} onAction={onAction} onChanged={onProjectsChanged} />
+          )}
 
           <section className="detail-section">
             <h3><Tag size={14} /> 标签</h3>

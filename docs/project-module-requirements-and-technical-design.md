@@ -457,8 +457,9 @@ ALTER TABLE indexed_assets
 ALTER TABLE indexed_assets
   ADD COLUMN origin_asset_uid TEXT;
 
-CREATE INDEX IF NOT EXISTS indexed_assets_scope_idx
-  ON indexed_assets(asset_scope, availability, kind);
+CREATE INDEX IF NOT EXISTS indexed_assets_project_scope_idx
+  ON indexed_assets(origin_asset_uid, availability)
+  WHERE asset_scope = 'project';
 ```
 
 字段约束由迁移代码和写入服务统一保证：
