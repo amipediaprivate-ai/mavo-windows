@@ -408,7 +408,28 @@ struct IndexedAssetSummary {
     loudness_range_lu: Option<f64>,
     loudness_status: String,
     availability: String,
+    original_source_method: String,
+    original_source_url: String,
+    author: String,
+    author_status: String,
     tags: Vec<AssetTagSummary>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetMetadataInput {
+    original_source_method: String,
+    original_source_url: String,
+    author: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetMetadata {
+    original_source_method: String,
+    original_source_url: String,
+    author: String,
+    author_status: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -826,6 +847,10 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
         ("directory_key", "TEXT NOT NULL DEFAULT ''"),
         ("asset_scope", "TEXT NOT NULL DEFAULT 'library'"),
         ("origin_asset_uid", "TEXT"),
+        ("original_source_method", "TEXT NOT NULL DEFAULT '本地导入'"),
+        ("original_source_url", "TEXT NOT NULL DEFAULT ''"),
+        ("author", "TEXT NOT NULL DEFAULT ''"),
+        ("author_status", "TEXT NOT NULL DEFAULT 'pending'"),
     ];
     for (name, definition) in additions {
         if !columns.iter().any(|column| column == name) {
@@ -1341,7 +1366,8 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
     let sql = format!(
         "SELECT rowid, asset_uid, path, name, extension, kind, size_bytes, modified_ms, indexed_at_ms,
                 width, height, duration_ms, thumbnail_path, metadata_status,
-                integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_status, availability
+                integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_status, availability,
+                original_source_method, original_source_url, author, author_status
          FROM indexed_assets WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
     );
     let mut page_values = values;
@@ -1378,6 +1404,10 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
                 loudness_range_lu: row.get(16)?,
                 loudness_status: row.get(17)?,
                 availability: row.get(18)?,
+                original_source_method: row.get(19)?,
+                original_source_url: row.get(20)?,
+                author: row.get(21)?,
+                author_status: row.get(22)?,
                 tags: Vec::new(),
             })
         })
@@ -2870,6 +2900,124 @@ fn rename_asset(
     Ok(renamed)
 }
 
+fn asset_metadata(connection: &Connection, asset_id: i64) -> Result<AssetMetadata, String> {
+    connection
+        .query_row(
+            "SELECT original_source_method, original_source_url, author, author_status
+             FROM indexed_assets WHERE rowid = ?1 AND asset_scope = 'library'",
+            params![asset_id],
+            |row| {
+                Ok(AssetMetadata {
+                    original_source_method: row.get(0)?,
+                    original_source_url: row.get(1)?,
+                    author: row.get(2)?,
+                    author_status: row.get(3)?,
+                })
+            },
+        )
+        .map_err(|_| "资源不存在或已从索引移除".to_string())
+}
+
+fn validated_asset_metadata(input: AssetMetadataInput) -> Result<AssetMetadataInput, String> {
+    let original_source_method = input.original_source_method.trim().to_string();
+    let original_source_url = input.original_source_url.trim().to_string();
+    let author = input.author.trim().to_string();
+    if original_source_method.is_empty() {
+        return Err("请填写原始来源方式".to_string());
+    }
+    if original_source_method.chars().count() > 100 {
+        return Err("原始来源方式不能超过 100 个字符".to_string());
+    }
+    if original_source_url.chars().count() > 2_048 {
+        return Err("原始来源地址不能超过 2048 个字符".to_string());
+    }
+    let normalized_url = original_source_url.to_ascii_lowercase();
+    if !original_source_url.is_empty()
+        && (!normalized_url.starts_with("http://") && !normalized_url.starts_with("https://")
+            || original_source_url.chars().any(char::is_whitespace))
+    {
+        return Err("原始来源地址必须是有效的 http 或 https 网址".to_string());
+    }
+    if author.chars().count() > 200 {
+        return Err("作者不能超过 200 个字符".to_string());
+    }
+    Ok(AssetMetadataInput {
+        original_source_method,
+        original_source_url,
+        author,
+    })
+}
+
+#[tauri::command]
+fn update_asset_metadata(
+    asset_id: i64,
+    input: AssetMetadataInput,
+    app: AppHandle,
+) -> Result<AssetMetadata, String> {
+    let input = validated_asset_metadata(input)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let updated = connection
+        .execute(
+            "UPDATE indexed_assets
+             SET original_source_method = ?1, original_source_url = ?2,
+                 author = ?3, author_status = 'ready'
+             WHERE rowid = ?4 AND asset_scope = 'library'",
+            params![
+                input.original_source_method,
+                input.original_source_url,
+                input.author,
+                asset_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if updated != 1 {
+        return Err("资源不存在或已从索引移除".to_string());
+    }
+    let metadata = asset_metadata(&connection, asset_id)?;
+    let _ = app.emit("asset-index-changed", ());
+    Ok(metadata)
+}
+
+fn extract_asset_author_blocking(asset_id: i64, app: AppHandle) -> Result<AssetMetadata, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("mavo-index.sqlite3"))?;
+    let (path, author, author_status): (String, String, String) = connection
+        .query_row(
+            "SELECT path, author, author_status FROM indexed_assets
+             WHERE rowid = ?1 AND asset_scope = 'library'",
+            params![asset_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| "资源不存在或已从索引移除".to_string())?;
+    if author_status == "ready" || !author.is_empty() {
+        return asset_metadata(&connection, asset_id);
+    }
+    let detected = extract_embedded_author(Path::new(&path)).unwrap_or_default();
+    connection
+        .execute(
+            "UPDATE indexed_assets
+             SET author = CASE WHEN author = '' THEN ?1 ELSE author END, author_status = 'ready'
+             WHERE rowid = ?2 AND asset_scope = 'library'",
+            params![detected, asset_id],
+        )
+        .map_err(|error| error.to_string())?;
+    asset_metadata(&connection, asset_id)
+}
+
+#[tauri::command]
+async fn extract_asset_author(asset_id: i64, app: AppHandle) -> Result<AssetMetadata, String> {
+    tauri::async_runtime::spawn_blocking(move || extract_asset_author_blocking(asset_id, app))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 fn relink_asset(
     asset_id: i64,
@@ -2923,7 +3071,7 @@ fn relink_asset(
          metadata_status = ?9, metadata_error = NULL, content_hash = NULL, hash_modified_ms = NULL,
          integrated_lufs = NULL, true_peak_dbtp = NULL, loudness_range_lu = NULL,
          loudness_threshold_lufs = NULL, loudness_status = ?10, loudness_error = NULL,
-         loudness_version = 1
+         loudness_version = 1, author = '', author_status = 'pending'
          WHERE rowid = ?11",
             params![
                 path.to_string_lossy().into_owned(),
@@ -3367,6 +3515,66 @@ fn media_command(name: &str) -> Command {
         }
     }
     background_windowless_command(name)
+}
+
+fn author_from_probe_json(value: &serde_json::Value) -> Option<String> {
+    const AUTHOR_KEYS: &[&str] = &["author", "artist", "album_artist", "creator", "composer"];
+    let author_from_tags = |tags: &serde_json::Map<String, serde_json::Value>| {
+        AUTHOR_KEYS.iter().find_map(|wanted| {
+            tags.iter().find_map(|(key, value)| {
+                if !key.eq_ignore_ascii_case(wanted) {
+                    return None;
+                }
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            })
+        })
+    };
+    value
+        .get("format")
+        .and_then(|format| format.get("tags"))
+        .and_then(serde_json::Value::as_object)
+        .and_then(&author_from_tags)
+        .or_else(|| {
+            value
+                .get("streams")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|streams| {
+                    streams.iter().find_map(|stream| {
+                        stream
+                            .get("tags")
+                            .and_then(serde_json::Value::as_object)
+                            .and_then(&author_from_tags)
+                    })
+                })
+        })
+}
+
+fn extract_embedded_author(path: &Path) -> Option<String> {
+    if !path.is_file() {
+        return None;
+    }
+    let mut probe = media_command("ffprobe");
+    probe
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format_tags=author,artist,album_artist,creator,composer:stream_tags=author,artist,album_artist,creator,composer",
+            "-of",
+            "json",
+        ])
+        .arg(path);
+    let output = command_output_with_timeout(&mut probe, Duration::from_secs(15)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout)
+        .ok()
+        .and_then(|value| author_from_probe_json(&value))
 }
 
 fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
@@ -4620,6 +4828,8 @@ pub fn run() {
             open_asset_original,
             open_asset_folder,
             rename_asset,
+            update_asset_metadata,
+            extract_asset_author,
             relink_asset,
             remove_asset_from_index,
             scan_duplicates,
@@ -4934,6 +5144,57 @@ mod tests {
                 "{name} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn asset_metadata_validation_trims_values_and_rejects_invalid_urls() {
+        let validated = validated_asset_metadata(AssetMetadataInput {
+            original_source_method: "  官方网站  ".to_string(),
+            original_source_url: "  https://example.com/assets/42  ".to_string(),
+            author: "  Mavo Studio  ".to_string(),
+        })
+        .unwrap();
+        assert_eq!(validated.original_source_method, "官方网站");
+        assert_eq!(
+            validated.original_source_url,
+            "https://example.com/assets/42"
+        );
+        assert_eq!(validated.author, "Mavo Studio");
+
+        for url in [
+            "example.com/file",
+            "ftp://example.com/file",
+            "https://bad url",
+        ] {
+            assert!(validated_asset_metadata(AssetMetadataInput {
+                original_source_method: "供应商".to_string(),
+                original_source_url: url.to_string(),
+                author: String::new(),
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn author_probe_prefers_format_author_and_falls_back_to_stream_artist() {
+        let format_metadata = serde_json::json!({
+            "format": { "tags": { "ARTIST": "  Format Artist  ", "author": "Author Name" } },
+            "streams": [{ "tags": { "artist": "Stream Artist" } }]
+        });
+        assert_eq!(
+            author_from_probe_json(&format_metadata).as_deref(),
+            Some("Author Name")
+        );
+
+        let stream_metadata = serde_json::json!({
+            "format": {},
+            "streams": [{ "tags": { "artist": "Stream Artist" } }]
+        });
+        assert_eq!(
+            author_from_probe_json(&stream_metadata).as_deref(),
+            Some("Stream Artist")
+        );
+        assert_eq!(author_from_probe_json(&serde_json::json!({})), None);
     }
 
     #[test]

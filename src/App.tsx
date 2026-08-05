@@ -43,6 +43,7 @@ import {
   mutateAssetTags,
   noteUserInteraction,
   renameIndexedAsset,
+  updateIndexedAssetMetadata,
   relinkIndexedAsset,
   removeIndexedAsset,
   saveTagGroup,
@@ -50,6 +51,8 @@ import {
   scanDuplicateAssets,
   setBackgroundTasksPaused,
   type AssetDirectoryTree,
+  type AssetMetadata,
+  type AssetMetadataInput,
   type AssetFacets,
   type BackgroundTask,
   type LoadIndexedAssetsOptions,
@@ -749,6 +752,24 @@ export default function App() {
     showToast(`已重命名为「${renamed.name}」`);
   };
 
+  const applyAssetMetadata = useCallback((asset: Asset, metadata: AssetMetadata) => {
+    const patch = {
+      originalSourceMethod: metadata.originalSourceMethod,
+      originalSourceUrl: metadata.originalSourceUrl,
+      author: metadata.author,
+      authorStatus: metadata.authorStatus,
+    };
+    setLibraryAssets((current) => current.map((item) => item.id === asset.id ? { ...item, ...patch } : item));
+    const cached = selectedAssetCache.current.get(asset.id);
+    if (cached) selectedAssetCache.current.set(asset.id, { ...cached, ...patch });
+  }, []);
+
+  const handleUpdateAssetMetadata = useCallback(async (asset: Asset, input: AssetMetadataInput) => {
+    const metadata = await updateIndexedAssetMetadata(asset, input);
+    applyAssetMetadata(asset, metadata);
+    return metadata;
+  }, [applyAssetMetadata]);
+
   const handleRemoveFromIndex = async (asset: (typeof libraryAssets)[number]) => {
     if (!window.confirm(`从索引中清理「${asset.name}」？原文件不会被删除。`)) return;
     try {
@@ -962,6 +983,8 @@ export default function App() {
             onOpenFolder={(asset) => void handleOpenFolder(asset)}
             onRelink={(asset) => void handleRelink(asset)}
             onRename={handleRename}
+            onUpdateMetadata={handleUpdateAssetMetadata}
+            onMetadataResolved={applyAssetMetadata}
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}
             tagCatalog={tagCatalog}
             onSetTags={handleSetAssetTags}

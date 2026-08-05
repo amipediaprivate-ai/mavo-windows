@@ -8,9 +8,16 @@ import {
   PencilLine,
   Sparkles,
   Tag,
+  UserRound,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
-import type { TagCatalog, TagInput } from "../lib/indexedAssets";
+import {
+  extractIndexedAssetAuthor,
+  type AssetMetadata,
+  type AssetMetadataInput,
+  type TagCatalog,
+  type TagInput,
+} from "../lib/indexedAssets";
 import type { Asset } from "../types";
 import { assetAspectRatio } from "../lib/assetDimensions";
 import { AudioDetailPlayer } from "./AudioPlayer";
@@ -28,6 +35,8 @@ interface DetailPanelProps {
   onOpenFolder: (asset: Asset) => void;
   onRelink: (asset: Asset) => void;
   onRename: (asset: Asset, newStem: string) => Promise<void>;
+  onUpdateMetadata: (asset: Asset, input: AssetMetadataInput) => Promise<AssetMetadata>;
+  onMetadataResolved: (asset: Asset, metadata: AssetMetadata) => void;
   onRemoveFromIndex: (asset: Asset) => void;
   tagCatalog?: TagCatalog;
   onSetTags: (asset: Asset, tagIds: number[]) => Promise<void>;
@@ -36,6 +45,123 @@ interface DetailPanelProps {
   onFilterTag: (tagId: number) => void;
   projectRevision: number;
   onProjectsChanged: () => void;
+}
+
+function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
+  asset: Asset;
+  onAction: (message: string) => void;
+  onUpdate: (asset: Asset, input: AssetMetadataInput) => Promise<AssetMetadata>;
+  onResolved: (asset: Asset, metadata: AssetMetadata) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [sourceMethod, setSourceMethod] = useState(asset.originalSourceMethod || asset.source);
+  const [sourceUrl, setSourceUrl] = useState(asset.originalSourceUrl || "");
+  const [author, setAuthor] = useState(asset.author || "");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (editing) return;
+    setSourceMethod(asset.originalSourceMethod || asset.source);
+    setSourceUrl(asset.originalSourceUrl || "");
+    setAuthor(asset.author || "");
+  }, [asset.author, asset.id, asset.originalSourceMethod, asset.originalSourceUrl, asset.source, editing]);
+
+  useEffect(() => {
+    if (!asset.id.startsWith("indexed-") || asset.authorStatus !== "pending") return;
+    let cancelled = false;
+    void extractIndexedAssetAuthor(asset)
+      .then((metadata) => {
+        if (!cancelled) onResolved(asset, metadata);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [asset, asset.authorStatus, asset.id, onResolved]);
+
+  const cancel = () => {
+    setEditing(false);
+    setError("");
+    setSourceMethod(asset.originalSourceMethod || asset.source);
+    setSourceUrl(asset.originalSourceUrl || "");
+    setAuthor(asset.author || "");
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const method = sourceMethod.trim();
+    const url = sourceUrl.trim();
+    if (!method) {
+      setError("请填写原始来源方式");
+      return;
+    }
+    if (url) {
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+      } catch {
+        setError("请输入有效的 http 或 https 网址");
+        return;
+      }
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const metadata = await onUpdate(asset, {
+        originalSourceMethod: method,
+        originalSourceUrl: url,
+        author: author.trim(),
+      });
+      onResolved(asset, metadata);
+      setEditing(false);
+      onAction("资源来源信息已保存");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="asset-metadata-form" onSubmit={(event) => void submit(event)}>
+      <section className="detail-section asset-metadata-section">
+        <div className="detail-section-heading">
+          <h3><CircleDot size={14} /> 基础信息</h3>
+          {!editing && asset.id.startsWith("indexed-") && <button type="button" onClick={() => setEditing(true)}><PencilLine size={12} /> 编辑</button>}
+        </div>
+        <DetailRow label="文件类型" value={asset.kind} />
+        <DetailRow label="文件格式" value={asset.format} />
+        <DetailRow label={asset.kind === "音频" ? "时长" : "尺寸 / 时长"} value={asset.dimensions} />
+        <DetailRow label="文件大小" value={asset.weight} />
+        <DetailRow label="导入时间" value={asset.importedAt} />
+        {editing ? (
+          <div className="asset-metadata-editor">
+            <label><span>原始来源方式</span><input value={sourceMethod} maxLength={100} disabled={saving} onChange={(event) => setSourceMethod(event.target.value)} placeholder="例如：官网、供应商、同事分享" /></label>
+            <label><span>原始来源地址</span><input type="url" value={sourceUrl} maxLength={2048} disabled={saving} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://（可留空）" /></label>
+          </div>
+        ) : (
+          <>
+            <DetailRow label="原始来源方式" value={asset.originalSourceMethod || asset.source} />
+            <div className="detail-row"><span>原始来源地址</span>{asset.originalSourceUrl ? <a href={asset.originalSourceUrl} target="_blank" rel="noreferrer" title={asset.originalSourceUrl}>{asset.originalSourceUrl}</a> : <strong className="empty-detail-value">未填写</strong>}</div>
+          </>
+        )}
+      </section>
+
+      <details className="asset-more-info" open={editing || undefined}>
+        <summary><span><UserRound size={14} /> 更多信息</span><ChevronRight size={14} /></summary>
+        <div className="asset-more-info-content">
+          {editing ? <label><span>作者</span><input value={author} maxLength={200} disabled={saving} onChange={(event) => setAuthor(event.target.value)} placeholder="未获取到时可手动填写" /></label> : <DetailRow label="作者" value={asset.author || "未填写"} />}
+          {!editing && asset.authorStatus === "pending" && <small>正在尝试从文件元数据获取作者…</small>}
+        </div>
+      </details>
+
+      {editing && (
+        <div className="asset-metadata-actions">
+          {error && <p>{error}</p>}
+          <div><button type="button" disabled={saving} onClick={cancel}>取消</button><button type="submit" disabled={saving || !sourceMethod.trim()}>{saving ? "保存中…" : "保存"}</button></div>
+        </div>
+      )}
+    </form>
+  );
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -111,7 +237,7 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   return (
@@ -172,14 +298,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             </button>
           )}
 
-          <section className="detail-section">
-            <h3><CircleDot size={14} /> 基础信息</h3>
-            <DetailRow label="文件类型" value={asset.kind} />
-            <DetailRow label="文件格式" value={asset.format} />
-            <DetailRow label={asset.kind === "音频" ? "时长" : "尺寸 / 时长"} value={asset.dimensions} />
-            <DetailRow label="文件大小" value={asset.weight} />
-            <DetailRow label="导入时间" value={asset.importedAt} />
-          </section>
+          <MetadataFields asset={asset} onAction={onAction} onUpdate={onUpdateMetadata} onResolved={onMetadataResolved} />
 
           <section className="detail-section">
             <h3><FolderOpen size={14} /> 所属文件夹</h3>
@@ -205,7 +324,6 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           </section>
 
           <section className="detail-section compact-section">
-            <DetailRow label="来源" value={asset.source} />
             <DetailRow label="状态" value={asset.availability === "missing" ? "文件缺失" : "可用"} />
             <DetailRow label="资源 ID" value={asset.id.toUpperCase()} />
           </section>

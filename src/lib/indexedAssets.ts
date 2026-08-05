@@ -23,7 +23,24 @@ export interface IndexedAssetRecord {
   loudnessRangeLu?: number | null;
   loudnessStatus: "pending" | "ready" | "silent" | "unsupported";
   availability: "available" | "missing";
+  originalSourceMethod: string;
+  originalSourceUrl: string;
+  author: string;
+  authorStatus: "pending" | "ready";
   tags: AssetTag[];
+}
+
+export interface AssetMetadata {
+  originalSourceMethod: string;
+  originalSourceUrl: string;
+  author: string;
+  authorStatus: "pending" | "ready";
+}
+
+export interface AssetMetadataInput {
+  originalSourceMethod: string;
+  originalSourceUrl: string;
+  author: string;
 }
 
 export interface IndexedAssetPage {
@@ -211,6 +228,10 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     tagItems: record.tags,
     assetUid: record.assetUid,
     source: "本地导入",
+    originalSourceMethod: record.originalSourceMethod,
+    originalSourceUrl: record.originalSourceUrl,
+    author: record.author,
+    authorStatus: record.authorStatus,
     importedAt: formatDate(record.indexedAtMs),
     modifiedAt: formatDate(record.modifiedMs),
     palette: ["#26324a", "#42658a", "#182033"],
@@ -310,6 +331,19 @@ export async function renameIndexedAsset(asset: Asset, newStem: string) {
 
 export async function removeIndexedAsset(asset: Asset) {
   await invoke("remove_asset_from_index", { assetId: Number(asset.id.replace("indexed-", "")) });
+}
+
+export async function updateIndexedAssetMetadata(asset: Asset, input: AssetMetadataInput) {
+  return invoke<AssetMetadata>("update_asset_metadata", {
+    assetId: Number(asset.id.replace("indexed-", "")),
+    input,
+  });
+}
+
+export async function extractIndexedAssetAuthor(asset: Asset) {
+  return invoke<AssetMetadata>("extract_asset_author", {
+    assetId: Number(asset.id.replace("indexed-", "")),
+  });
 }
 
 export async function enrichPendingPreviews(onAssetsCommitted: () => void) {

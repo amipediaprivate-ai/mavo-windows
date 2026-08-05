@@ -24,6 +24,10 @@ export interface Asset {
   tagItems?: AssetTag[];
   assetUid?: string;
   source: AssetSource;
+  originalSourceMethod?: string;
+  originalSourceUrl?: string;
+  author?: string;
+  authorStatus?: "pending" | "ready";
   importedAt: string;
   modifiedAt: string;
   palette: [string, string, string];
