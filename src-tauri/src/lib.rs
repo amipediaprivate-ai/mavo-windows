@@ -37,6 +37,7 @@ use tauri::{
     AppHandle, Emitter, Manager, State,
 };
 
+mod background_removal;
 mod projects;
 
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
@@ -5012,6 +5013,10 @@ pub fn run() {
             open_asset_original,
             open_asset_folder,
             rename_asset,
+            background_removal::remove_image_background,
+            background_removal::read_background_removal_preview,
+            background_removal::save_background_removal,
+            background_removal::discard_background_removal,
             update_asset_metadata,
             extract_asset_author,
             relink_asset,

@@ -62,6 +62,7 @@ import {
 } from "./lib/indexedAssets";
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
 import type { Asset, AssetKind, AssetView, Filters, ScanScope } from "./types";
+import type { SaveBackgroundRemovalResult } from "./lib/backgroundRemoval";
 
 const emptyFilters: Filters = {
   source: [],
@@ -752,6 +753,20 @@ export default function App() {
     showToast(`已重命名为「${renamed.name}」`);
   };
 
+  const handleBackgroundRemoved = (asset: Asset, result: SaveBackgroundRemovalResult) => {
+    if (result.overwroteOriginal && result.assetName) {
+      const patch = { name: result.assetName, format: "PNG", localPath: result.path, thumbnailUrl: undefined };
+      setLibraryAssets((current) => current.map((item) => item.id === asset.id ? { ...item, ...patch } : item));
+      const cached = selectedAssetCache.current.get(asset.id);
+      if (cached) selectedAssetCache.current.set(asset.id, { ...cached, ...patch });
+    }
+    setIndexRevision((revision) => revision + 1);
+    void enrichPendingPreviews(() => undefined)
+      .then(() => setIndexRevision((revision) => revision + 1))
+      .catch(() => undefined);
+    showToast(`抠图结果已保存到 ${result.path}`);
+  };
+
   const applyAssetMetadata = useCallback((asset: Asset, metadata: AssetMetadata) => {
     const patch = {
       originalSourceMethod: metadata.originalSourceMethod,
@@ -983,6 +998,7 @@ export default function App() {
             onOpenFolder={(asset) => void handleOpenFolder(asset)}
             onRelink={(asset) => void handleRelink(asset)}
             onRename={handleRename}
+            onBackgroundRemoved={handleBackgroundRemoved}
             onUpdateMetadata={handleUpdateAssetMetadata}
             onMetadataResolved={applyAssetMetadata}
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}

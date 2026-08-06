@@ -6,6 +6,7 @@ import {
   MoreHorizontal,
   PanelRightClose,
   PencilLine,
+  Scissors,
   Sparkles,
   Tag,
   UserRound,
@@ -26,6 +27,8 @@ import { AssetThumbnail } from "./AssetThumbnail";
 import { VideoDetailPlayer } from "./VideoPlayer";
 import { TagPicker } from "./TagPicker";
 import { ProjectMembershipSection } from "./ProjectMembershipSection";
+import { BackgroundRemovalDialog } from "./BackgroundRemovalDialog";
+import { canRemoveImageBackground, type SaveBackgroundRemovalResult } from "../lib/backgroundRemoval";
 
 interface DetailPanelProps {
   asset?: Asset;
@@ -35,6 +38,7 @@ interface DetailPanelProps {
   onOpenFolder: (asset: Asset) => void;
   onRelink: (asset: Asset) => void;
   onRename: (asset: Asset, newStem: string) => Promise<void>;
+  onBackgroundRemoved: (asset: Asset, result: SaveBackgroundRemovalResult) => void;
   onUpdateMetadata: (asset: Asset, input: AssetMetadataInput) => Promise<AssetMetadata>;
   onMetadataResolved: (asset: Asset, metadata: AssetMetadata) => void;
   onRemoveFromIndex: (asset: Asset) => void;
@@ -273,9 +277,10 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [backgroundRemovalOpen, setBackgroundRemovalOpen] = useState(false);
   return (
     <aside className="detail-panel">
       <div className="detail-heading">
@@ -316,7 +321,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             )}
           </div>
 
-          <div className="detail-actions">
+          <div className={`detail-actions ${canRemoveImageBackground(asset) ? "with-background-removal" : ""}`}>
             {asset.availability === "missing" ? (
               <button className="primary-button" onClick={() => onRelink(asset)}>重新定位文件</button>
             ) : asset.kind === "音频" || asset.kind === "视频" ? (
@@ -324,6 +329,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             ) : (
               <button className="primary-button" onClick={() => onViewOriginal(asset)}>查看原图</button>
             )}
+            {canRemoveImageBackground(asset) && <button className="secondary-button background-removal-trigger" onClick={() => setBackgroundRemovalOpen(true)}><Scissors size={14} /> 一键抠图</button>}
             <button className="icon-button" onClick={() => onAction("更多操作菜单已打开")} aria-label="更多操作"><MoreHorizontal size={17} /></button>
           </div>
 
@@ -385,6 +391,14 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
       )}
       {asset && renameOpen && (
         <AssetRenameDialog asset={asset} onClose={() => setRenameOpen(false)} onRename={onRename} />
+      )}
+      {asset && backgroundRemovalOpen && (
+        <BackgroundRemovalDialog
+          key={asset.id}
+          asset={asset}
+          onClose={() => setBackgroundRemovalOpen(false)}
+          onSaved={(result) => onBackgroundRemoved(asset, result)}
+        />
       )}
     </aside>
   );

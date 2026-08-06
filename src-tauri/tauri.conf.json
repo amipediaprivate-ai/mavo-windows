@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "ai.amipedia.caevir",
   "build": {
-    "beforeDevCommand": "pnpm.cmd prepare:ffmpeg && pnpm.cmd dev",
+    "beforeDevCommand": "pnpm.cmd prepare:runtimes && pnpm.cmd dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm.cmd prepare:ffmpeg && pnpm.cmd build",
+    "beforeBuildCommand": "pnpm.cmd prepare:runtimes && pnpm.cmd build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -32,9 +32,10 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "resources": {
-      "resources/ffmpeg/": "ffmpeg/",
-      "../THIRD_PARTY_NOTICES.md": ""
+      "resources": {
+        "resources/ffmpeg/": "ffmpeg/",
+        "resources/rembg-runtime/": "rembg-runtime/",
+        "../THIRD_PARTY_NOTICES.md": ""
     }
   }
 }

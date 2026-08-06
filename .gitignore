@@ -7,3 +7,5 @@ dist/
 .vscode/
 src-tauri/target/
 src-tauri/resources/ffmpeg/
+src-tauri/resources/rembg-runtime/
+.tmp-python-embed.zip
