@@ -63,6 +63,7 @@ import {
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
 import type { Asset, AssetKind, AssetView, Filters, ScanScope } from "./types";
 import type { SaveBackgroundRemovalResult } from "./lib/backgroundRemoval";
+import type { SavePngCompressionResult } from "./lib/pngCompression";
 
 const emptyFilters: Filters = {
   source: [],
@@ -767,6 +768,20 @@ export default function App() {
     showToast(`抠图结果已保存到 ${result.path}`);
   };
 
+  const handlePngCompressed = (asset: Asset, result: SavePngCompressionResult) => {
+    if (result.overwroteOriginal) {
+      const patch = { name: result.assetName || asset.name, localPath: result.path, thumbnailUrl: undefined };
+      setLibraryAssets((current) => current.map((item) => item.id === asset.id ? { ...item, ...patch } : item));
+      const cached = selectedAssetCache.current.get(asset.id);
+      if (cached) selectedAssetCache.current.set(asset.id, { ...cached, ...patch });
+    }
+    setIndexRevision((revision) => revision + 1);
+    void enrichPendingPreviews(() => undefined)
+      .then(() => setIndexRevision((revision) => revision + 1))
+      .catch(() => undefined);
+    showToast(`PNG 压缩结果已保存到 ${result.path}`);
+  };
+
   const applyAssetMetadata = useCallback((asset: Asset, metadata: AssetMetadata) => {
     const patch = {
       originalSourceMethod: metadata.originalSourceMethod,
@@ -999,6 +1014,7 @@ export default function App() {
             onRelink={(asset) => void handleRelink(asset)}
             onRename={handleRename}
             onBackgroundRemoved={handleBackgroundRemoved}
+            onPngCompressed={handlePngCompressed}
             onUpdateMetadata={handleUpdateAssetMetadata}
             onMetadataResolved={applyAssetMetadata}
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}

@@ -16,7 +16,10 @@ tauri-build = { version = "2", features = [] }
 blake3 = "1.8"
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+imagequant = "4.4.1"
 notify = "8.2"
+oxipng = { version = "10.1.1", default-features = false, features = ["parallel"] }
+png = "0.18.1"
 psd = "0.3.5"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

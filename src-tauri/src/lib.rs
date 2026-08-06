@@ -38,6 +38,7 @@ use tauri::{
 };
 
 mod background_removal;
+mod png_compression;
 mod projects;
 
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
@@ -5017,6 +5018,10 @@ pub fn run() {
             background_removal::read_background_removal_preview,
             background_removal::save_background_removal,
             background_removal::discard_background_removal,
+            png_compression::compress_png,
+            png_compression::read_png_compression_preview,
+            png_compression::save_png_compression,
+            png_compression::discard_png_compression,
             update_asset_metadata,
             extract_asset_author,
             relink_asset,

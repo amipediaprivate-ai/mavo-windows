@@ -24,3 +24,16 @@ Caevir invokes [rembg](https://github.com/danielgatis/rembg) as a local Python l
 The selectable BiRefNet models are based on [BiRefNet](https://github.com/ZhengPeng7/BiRefNet), licensed under the MIT License. Model files are not shipped in the installer; rembg downloads the selected ONNX model on first use and stores it in the user's Caevir application-data directory.
 
 The bundled Python runtime also contains rembg's runtime dependencies, including ONNX Runtime and Pillow. Their package metadata and license files are retained under `Lib/site-packages`.
+
+## pngquant / libimagequant
+
+Caevir uses [libimagequant](https://pngquant.org/lib/), the official quantization engine behind [pngquant](https://pngquant.org/), for optional lossy PNG compression. The integrated Rust crate version is 4.4.1.
+
+libimagequant is dual-licensed. Free and open-source use is available under the GNU General Public License version 3 or later; closed-source distribution, App Store distribution, and other non-GPL uses require a commercial license from the copyright holder. Distributors of Caevir are responsible for selecting and complying with the license appropriate to their distribution model.
+
+- Source: [ImageOptim/libimagequant](https://github.com/ImageOptim/libimagequant)
+- License and commercial licensing information: [libimagequant licensing](https://pngquant.org/lib/)
+
+## OxiPNG
+
+Caevir uses [OxiPNG](https://github.com/oxipng/oxipng) 10.1.1 for lossless PNG optimization. OxiPNG is licensed under the MIT License. Pixel-preserving mode disables alpha optimization and 16-bit scaling so decoded pixel values are not changed.
