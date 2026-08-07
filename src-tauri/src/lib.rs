@@ -37,6 +37,7 @@ use tauri::{
     AppHandle, Emitter, Manager, State,
 };
 
+mod audio_processing;
 mod background_removal;
 mod png_compression;
 mod projects;
@@ -59,7 +60,7 @@ fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
-fn background_windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(crate) fn background_windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = windowless_command(program);
     #[cfg(windows)]
     {
@@ -88,7 +89,7 @@ const ASSET_EXTENSIONS: &[&str] = &[
     "clip", "dae", "dng", "eps", "exr", "fbx", "fig", "flac", "flv", "gif", "glb", "gltf", "hdr",
     "heic", "heif", "ico", "indd", "jpeg", "jpg", "kra", "m4a", "m4v", "max", "mkv", "mov", "mp3",
     "mp4", "obj", "ogg", "otf", "pdf", "png", "psb", "psd", "raw", "sketch", "svg", "tga", "tif",
-    "tiff", "ttf", "wav", "webm", "webp", "wma", "wmv", "woff", "woff2", "xd",
+    "tiff", "ttf", "wav", "webm", "webp", "wma", "wmv", "woff", "woff2", "xd", "fsb",
 ];
 
 #[derive(Clone, Default)]
@@ -486,7 +487,7 @@ fn asset_kind(extension: &str) -> &'static str {
     match extension {
         "gif" | "ase" | "aseprite" => "动图",
         "mp4" | "mov" | "mkv" | "avi" | "webm" | "wmv" | "m4v" | "flv" => "视频",
-        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "aif" | "aiff" | "wma" => "音频",
+        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "aif" | "aiff" | "wma" | "fsb" => "音频",
         "fbx" | "obj" | "glb" | "gltf" | "blend" | "3ds" | "dae" | "max" => "3D 模型",
         "ttf" | "otf" | "woff" | "woff2" => "字体",
         "pdf" => "文档",
@@ -518,7 +519,7 @@ fn initial_loudness_status(extension: &str) -> &'static str {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -600,7 +601,7 @@ fn resolve_roots(request: &ScanRequest) -> Result<Vec<PathBuf>, String> {
     Ok(roots)
 }
 
-fn normalize_directory_key(value: &Path) -> String {
+pub(crate) fn normalize_directory_key(value: &Path) -> String {
     let normalized = value.to_string_lossy().into_owned();
     #[cfg(windows)]
     let normalized = normalized.replace('/', "\\");
@@ -1123,12 +1124,12 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
 }
 
 #[cfg(not(test))]
-fn setup_database(path: &Path) -> Result<Connection, String> {
+pub(crate) fn setup_database(path: &Path) -> Result<Connection, String> {
     open_database(path)
 }
 
 #[cfg(test)]
-fn setup_database(path: &Path) -> Result<Connection, String> {
+pub(crate) fn setup_database(path: &Path) -> Result<Connection, String> {
     initialize_database(path)
 }
 
@@ -2839,7 +2840,7 @@ fn open_asset_folder(asset_id: i64, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn validated_asset_stem(value: &str) -> Result<String, String> {
+pub(crate) fn validated_asset_stem(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err("文件名不能为空".to_string());
@@ -3583,7 +3584,7 @@ fn media_thumbnail_path(thumbnail_dir: &Path, path: &str, modified_ms: i64, kind
     ))
 }
 
-fn media_command(name: &str) -> Command {
+pub(crate) fn media_command(name: &str) -> Command {
     if let Some(directory) = MEDIA_TOOL_DIR.get() {
         let file_name = if cfg!(windows) {
             format!("{name}.exe")
@@ -3658,7 +3659,10 @@ fn extract_embedded_author(path: &Path) -> Option<String> {
         .and_then(|value| author_from_probe_json(&value))
 }
 
-fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output, String> {
+pub(crate) fn command_output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<Output, String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -5065,6 +5069,10 @@ mod tests {
             None,
             Some("newest"),
             Some("name"),
+            audio_processing::process_audio,
+            audio_processing::read_audio_processing_preview,
+            audio_processing::save_audio_processing,
+            audio_processing::discard_audio_processing,
             Some("size"),
             Some("duration"),
             Some("duplicates"),

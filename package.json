@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "prepare:ffmpeg": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-ffmpeg.ps1",
+    "prepare:vgmstream": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-vgmstream.ps1",
     "prepare:rembg": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-rembg.ps1",
-    "prepare:runtimes": "pnpm.cmd prepare:ffmpeg && pnpm.cmd prepare:rembg",
+    "prepare:runtimes": "pnpm.cmd prepare:ffmpeg && pnpm.cmd prepare:vgmstream && pnpm.cmd prepare:rembg",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",

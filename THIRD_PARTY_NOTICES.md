@@ -13,6 +13,12 @@ This software uses code of [FFmpeg](https://ffmpeg.org/) licensed under the [GNU
 
 FFmpeg is not owned by the Caevir project. The bundled runtime is kept under its original name and license. The build-time preparation script verifies the SHA-256 checksum published with the BtbN release before the runtime is packaged.
 
+## vgmstream
+
+Caevir includes the Windows x64 `vgmstream-cli` runtime and invokes it as a separate local process to decode FSB game-audio banks to WAV.
+
+[vgmstream](https://github.com/vgmstream/vgmstream) is distributed under the BSD 3-Clause License. The prepared runtime retains the upstream `COPYING` file and accompanying codec libraries. The build preparation script pins release `r2117` and verifies the SHA-256 digest published by GitHub before packaging.
+
 ## Python
 
 Caevir includes the official Windows embeddable distribution of Python 3.12.6 to run the local background-removal module. Python is distributed under the Python Software Foundation License Version 2. The complete license text is included in the prepared runtime as `LICENSE.txt`; source and release files are available from [Python 3.12.6](https://www.python.org/downloads/release/python-3126/).

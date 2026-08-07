@@ -64,6 +64,7 @@ import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
 import type { Asset, AssetKind, AssetView, Filters, ScanScope } from "./types";
 import type { SaveBackgroundRemovalResult } from "./lib/backgroundRemoval";
 import type { SavePngCompressionResult } from "./lib/pngCompression";
+import type { SaveAudioProcessingResult } from "./lib/audioProcessing";
 
 const emptyFilters: Filters = {
   source: [],
@@ -782,6 +783,23 @@ export default function App() {
     showToast(`PNG 压缩结果已保存到 ${result.path}`);
   };
 
+  const handleAudioProcessed = (asset: Asset, result: SaveAudioProcessingResult) => {
+    if (result.overwroteOriginal && result.assetName && result.paths[0]) {
+      const extension = result.assetName.includes(".") ? result.assetName.split(".").pop()?.toUpperCase() : asset.format;
+      const patch = { name: result.assetName, format: extension || asset.format, localPath: result.paths[0], thumbnailUrl: undefined };
+      setLibraryAssets((current) => current.map((item) => item.id === asset.id ? { ...item, ...patch } : item));
+      const cached = selectedAssetCache.current.get(asset.id);
+      if (cached) selectedAssetCache.current.set(asset.id, { ...cached, ...patch });
+    }
+    setIndexRevision((revision) => revision + 1);
+    void enrichPendingPreviews(() => undefined)
+      .then(() => setIndexRevision((revision) => revision + 1))
+      .catch(() => undefined);
+    showToast(result.paths.length === 1
+      ? `音频结果已保存到 ${result.paths[0]}`
+      : `已保存 ${result.paths.length} 个音频结果`);
+  };
+
   const applyAssetMetadata = useCallback((asset: Asset, metadata: AssetMetadata) => {
     const patch = {
       originalSourceMethod: metadata.originalSourceMethod,
@@ -1019,6 +1037,7 @@ export default function App() {
             onMetadataResolved={applyAssetMetadata}
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}
             tagCatalog={tagCatalog}
+            onAudioProcessed={handleAudioProcessed}
             onSetTags={handleSetAssetTags}
             onCreateTag={handleCreateTag}
             onCreateTagGroup={handleCreateTagGroup}

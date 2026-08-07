@@ -1,13 +1,16 @@
 import {
+  ArrowLeftRight,
   ChevronRight,
   CircleDot,
   ExternalLink,
   FolderOpen,
+  Gauge,
   MoreHorizontal,
   PanelRightClose,
   PencilLine,
   Scissors,
   Minimize2,
+  FileAudio,
   Sparkles,
   Tag,
   UserRound,
@@ -33,6 +36,13 @@ import { canRemoveImageBackground, type SaveBackgroundRemovalResult } from "../l
 import { PngCompressionDialog } from "./PngCompressionDialog";
 import { canCompressPng, type SavePngCompressionResult } from "../lib/pngCompression";
 
+import { AudioProcessingDialog } from "./AudioProcessingDialog";
+import {
+  canConvertFsb,
+  canUseStandardAudioTools,
+  type AudioProcessingOperation,
+  type SaveAudioProcessingResult,
+} from "../lib/audioProcessing";
 interface DetailPanelProps {
   asset?: Asset;
   onClose: () => void;
@@ -44,6 +54,7 @@ interface DetailPanelProps {
   onBackgroundRemoved: (asset: Asset, result: SaveBackgroundRemovalResult) => void;
   onPngCompressed: (asset: Asset, result: SavePngCompressionResult) => void;
   onUpdateMetadata: (asset: Asset, input: AssetMetadataInput) => Promise<AssetMetadata>;
+  onAudioProcessed: (asset: Asset, result: SaveAudioProcessingResult) => void;
   onMetadataResolved: (asset: Asset, metadata: AssetMetadata) => void;
   onRemoveFromIndex: (asset: Asset) => void;
   tagCatalog?: TagCatalog;
@@ -281,7 +292,7 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onPngCompressed, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onPngCompressed, onAudioProcessed, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [backgroundRemovalOpen, setBackgroundRemovalOpen] = useState(false);
@@ -326,7 +337,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             )}
           </div>
 
-          <div className={`detail-actions ${canCompressPng(asset) ? "with-image-tools" : canRemoveImageBackground(asset) ? "with-background-removal" : ""}`}>
+          <div className={`detail-actions ${canConvertFsb(asset) ? "with-audio-tools fsb-only" : canUseStandardAudioTools(asset) ? "with-audio-tools" : canCompressPng(asset) ? "with-image-tools" : canRemoveImageBackground(asset) ? "with-background-removal" : ""}`}>
             {asset.availability === "missing" ? (
               <button className="primary-button" onClick={() => onRelink(asset)}>重新定位文件</button>
             ) : asset.kind === "音频" || asset.kind === "视频" ? (
@@ -342,6 +353,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           {asset.hasUpdate && (
             <button className="online-update" onClick={() => onAction("资源版本对比已打开")}>
               <span><Sparkles size={15} /> 在线资源有新版本</span>
+  const [audioProcessingOperation, setAudioProcessingOperation] = useState<AudioProcessingOperation>();
               <ChevronRight size={15} />
             </button>
           )}
@@ -392,6 +404,9 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           onClose={() => setTagPickerOpen(false)}
           onSave={(tagIds) => onSetTags(asset, tagIds)}
           onCreate={onCreateTag}
+            {canConvertFsb(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("fsbToWav")}><FileAudio size={14} /> FSB 转 WAV</button>}
+            {canUseStandardAudioTools(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("formatConversion")}><ArrowLeftRight size={14} /> 格式转换</button>}
+            {canUseStandardAudioTools(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("compression")}><Gauge size={14} /> 音频压缩</button>}
           onCreateGroup={onCreateTagGroup}
         />
       )}
@@ -417,3 +432,12 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
     </aside>
   );
 }
+      {asset && audioProcessingOperation && (
+        <AudioProcessingDialog
+          key={`${asset.id}-${audioProcessingOperation}`}
+          asset={asset}
+          operation={audioProcessingOperation}
+          onClose={() => setAudioProcessingOperation(undefined)}
+          onSaved={(result) => onAudioProcessed(asset, result)}
+        />
+      )}

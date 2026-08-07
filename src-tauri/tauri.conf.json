@@ -34,6 +34,7 @@
     "targets": ["nsis"],
       "resources": {
         "resources/ffmpeg/": "ffmpeg/",
+        "resources/vgmstream/": "vgmstream/",
         "resources/rembg-runtime/": "rembg-runtime/",
         "../THIRD_PARTY_NOTICES.md": ""
     }
