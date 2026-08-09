@@ -4,8 +4,10 @@ import type { Asset } from "../types";
 export type DoubleBackgroundSaveMode = "saveAs" | "sourceDirectory" | "overwrite";
 export type DoubleBackgroundPreviewVariant = "counterpart" | "result";
 export type DetectedImageBackground = "black" | "white" | "transparent";
+export type BackgroundChangeScope = "edge" | "all";
 
 export interface DoubleBackgroundRemovalOptions {
+  backgroundScope: BackgroundChangeScope;
   backgroundTolerance: number;
   softness: number;
   tolerance: number;

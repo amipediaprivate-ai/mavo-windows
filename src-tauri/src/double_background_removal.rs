@@ -42,12 +42,20 @@ struct DoubleBackgroundJob {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DoubleBackgroundRemovalOptions {
+    background_scope: BackgroundScope,
     background_tolerance: u8,
     softness: u8,
     tolerance: u8,
     edge_contrast: u8,
     post_process: bool,
     erosion: u8,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum BackgroundScope {
+    Edge,
+    All,
 }
 
 #[derive(Serialize)]
@@ -339,6 +347,25 @@ fn connected_background_mask(image: &RgbaImage, kind: BackgroundKind, tolerance:
         }
     }
     background
+}
+
+fn all_background_mask(image: &RgbaImage, kind: BackgroundKind, tolerance: u8) -> Vec<bool> {
+    image
+        .pixels()
+        .map(|pixel| matches_background(pixel, kind, tolerance))
+        .collect()
+}
+
+fn background_mask(
+    image: &RgbaImage,
+    kind: BackgroundKind,
+    tolerance: u8,
+    scope: BackgroundScope,
+) -> Vec<bool> {
+    match scope {
+        BackgroundScope::Edge => connected_background_mask(image, kind, tolerance),
+        BackgroundScope::All => all_background_mask(image, kind, tolerance),
+    }
 }
 
 fn alpha_from_background(
@@ -641,8 +668,12 @@ fn remove_background_blocking(
         )
     } else {
         let analysis = analyze_background(&source, options.background_tolerance)?;
-        let background =
-            connected_background_mask(&source, analysis.kind, options.background_tolerance);
+        let background = background_mask(
+            &source,
+            analysis.kind,
+            options.background_tolerance,
+            options.background_scope,
+        );
         let background_pixels = background.iter().filter(|value| **value).count();
         let background_ratio = background_pixels as f64 / background.len() as f64;
         if background_ratio < 0.01 {
@@ -827,6 +858,7 @@ mod tests {
 
     fn options() -> DoubleBackgroundRemovalOptions {
         DoubleBackgroundRemovalOptions {
+            background_scope: BackgroundScope::All,
             background_tolerance: 18,
             softness: 0,
             tolerance: 50,
@@ -893,6 +925,35 @@ mod tests {
         let mask = connected_background_mask(&image, BackgroundKind::Black, 18);
         assert!(mask[0]);
         assert!(!mask[4 * 9 + 4]);
+    }
+
+    #[test]
+    fn all_background_mask_includes_isolated_matching_regions() {
+        let mut image = RgbaImage::from_pixel(9, 9, Rgba([0, 0, 0, 255]));
+        for y in 2..7 {
+            for x in 2..7 {
+                image.put_pixel(x, y, Rgba([220, 80, 40, 255]));
+            }
+        }
+        image.put_pixel(4, 4, Rgba([0, 0, 0, 255]));
+        let mask = all_background_mask(&image, BackgroundKind::Black, 18);
+        assert!(mask[0]);
+        assert!(mask[4 * 9 + 4]);
+    }
+
+    #[test]
+    fn background_scope_selects_edge_or_all_matching_pixels() {
+        let mut image = RgbaImage::from_pixel(9, 9, Rgba([0, 0, 0, 255]));
+        for y in 2..7 {
+            for x in 2..7 {
+                image.put_pixel(x, y, Rgba([220, 80, 40, 255]));
+            }
+        }
+        image.put_pixel(4, 4, Rgba([0, 0, 0, 255]));
+        let edge = background_mask(&image, BackgroundKind::Black, 18, BackgroundScope::Edge);
+        let all = background_mask(&image, BackgroundKind::Black, 18, BackgroundScope::All);
+        assert!(!edge[4 * 9 + 4]);
+        assert!(all[4 * 9 + 4]);
     }
 
     #[test]

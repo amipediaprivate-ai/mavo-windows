@@ -6,6 +6,7 @@ import {
   loadDoubleBackgroundRemovalPreview,
   removeImageBackgroundByDoubleBackground,
   saveDoubleBackgroundRemoval,
+  type BackgroundChangeScope,
   type DoubleBackgroundRemovalResult,
   type DoubleBackgroundSaveMode,
   type SaveDoubleBackgroundRemovalResult,
@@ -47,6 +48,7 @@ export function DoubleBackgroundRemovalDialog({ asset, onClose, onSaved }: Doubl
   const [preview, setPreview] = useState<PreviewKind>("original");
   const [previewBackground, setPreviewBackground] = useState("checker");
   const [customBackground, setCustomBackground] = useState("#37634d");
+  const [backgroundScope, setBackgroundScope] = useState<BackgroundChangeScope>("all");
   const [backgroundTolerance, setBackgroundTolerance] = useState(18);
   const [softness, setSoftness] = useState(2);
   const [tolerance, setTolerance] = useState(70);
@@ -65,7 +67,7 @@ export function DoubleBackgroundRemovalDialog({ asset, onClose, onSaved }: Doubl
   const autoStartedRef = useRef(false);
 
   const busy = processing || saving;
-  const settingsSignature = `${backgroundTolerance}:${softness}:${tolerance}:${edgeContrast}:${postProcess}:${erosion}`;
+  const settingsSignature = `${backgroundScope}:${backgroundTolerance}:${softness}:${tolerance}:${edgeContrast}:${postProcess}:${erosion}`;
   const stale = Boolean(result && settingsSignature !== resultSignature);
   const sourceExtension = asset.format.toUpperCase();
 
@@ -119,6 +121,7 @@ export function DoubleBackgroundRemovalDialog({ asset, onClose, onSaved }: Doubl
     let nextResultUrl = "";
     try {
       const next = await removeImageBackgroundByDoubleBackground(asset, {
+        backgroundScope,
         backgroundTolerance,
         softness,
         tolerance,
@@ -240,9 +243,19 @@ export function DoubleBackgroundRemovalDialog({ asset, onClose, onSaved }: Doubl
 
             <section>
               <h3>配对图生成</h3>
+              <div className="double-background-scope-options" role="radiogroup" aria-label="背景变更范围">
+                <label className={backgroundScope === "edge" ? "selected" : ""}>
+                  <input type="radio" name="background-change-scope" value="edge" checked={backgroundScope === "edge"} disabled={busy} onChange={() => setBackgroundScope("edge")} />
+                  <span><strong>仅变更边缘背景</strong><small>只处理与图片边缘连通的背景区域。</small></span>
+                </label>
+                <label className={backgroundScope === "all" ? "selected" : ""}>
+                  <input type="radio" name="background-change-scope" value="all" checked={backgroundScope === "all"} disabled={busy} onChange={() => setBackgroundScope("all")} />
+                  <span><strong>全部背景变更</strong><small>处理全图中符合容差的背景，包括被线条包围的内部区域。</small></span>
+                </label>
+              </div>
               <div className="background-removal-sliders">
                 <label><span>背景识别容差 <strong>{backgroundTolerance}</strong></span><input type="range" min="4" max="48" value={backgroundTolerance} disabled={busy} onChange={(event) => setBackgroundTolerance(Number(event.target.value))} /><small>越高越容易把近黑或近白像素识别为背景。</small></label>
-                <label><span>蒙版柔化宽度 <strong>{softness} px</strong></span><input type="range" min="0" max="8" value={softness} disabled={busy} onChange={(event) => setSoftness(Number(event.target.value))} /><small>只柔化与图片边缘连通的背景边界。</small></label>
+                <label><span>蒙版柔化宽度 <strong>{softness} px</strong></span><input type="range" min="0" max="8" value={softness} disabled={busy} onChange={(event) => setSoftness(Number(event.target.value))} /><small>柔化已识别背景与前景之间的边界。</small></label>
               </div>
             </section>
 
