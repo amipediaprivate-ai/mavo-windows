@@ -4386,6 +4386,12 @@ select:focus-visible,
   overflow: hidden;
   padding: 34px;
   color: #8793a5;
+  background-color: #e9edf3;
+  background-image: linear-gradient(45deg, #d9dee7 25%, transparent 25%), linear-gradient(-45deg, #d9dee7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #d9dee7 75%), linear-gradient(-45deg, transparent 75%, #d9dee7 75%);
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+  background-size: 24px 24px;
+}
+
 .audio-processing-icon {
   background: linear-gradient(145deg, #6f63d9, #5144b8);
   box-shadow: 0 6px 16px rgba(81, 68, 184, 0.25);
@@ -4514,12 +4520,6 @@ select:focus-visible,
 .audio-output-list strong { overflow: hidden; color: var(--text-secondary); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .audio-output-list small { color: var(--text-muted); font-size: 8px; }
 .background-removal-save-modes label.disabled { opacity: 0.45; }
-
-  background-color: #e9edf3;
-  background-image: linear-gradient(45deg, #d9dee7 25%, transparent 25%), linear-gradient(-45deg, #d9dee7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #d9dee7 75%), linear-gradient(-45deg, transparent 75%, #d9dee7 75%);
-  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
-  background-size: 24px 24px;
-}
 
 .background-removal-stage > img {
   width: 100%;
@@ -4777,6 +4777,9 @@ select:focus-visible,
   .background-removal-controls { border-top: 1px solid var(--border); border-left: 0; }
   .background-removal-dialog > footer > span { display: none; }
   .background-removal-dialog > footer { justify-content: flex-end; }
+  .audio-processing-stage { grid-template-columns: 1fr; gap: 10px; padding: 18px; }
+  .audio-processing-direction { transform: rotate(90deg); }
+  .audio-processing-player { min-height: 180px; }
 }
 
 .scan-dialog-backdrop {
@@ -4802,9 +4805,6 @@ select:focus-visible,
 }
 
 .scan-dialog-header {
-  .audio-processing-stage { grid-template-columns: 1fr; gap: 10px; padding: 18px; }
-  .audio-processing-direction { transform: rotate(90deg); }
-  .audio-processing-player { min-height: 180px; }
   min-height: 78px;
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) 32px;

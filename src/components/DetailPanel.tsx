@@ -297,6 +297,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
   const [renameOpen, setRenameOpen] = useState(false);
   const [backgroundRemovalOpen, setBackgroundRemovalOpen] = useState(false);
   const [pngCompressionOpen, setPngCompressionOpen] = useState(false);
+  const [audioProcessingOperation, setAudioProcessingOperation] = useState<AudioProcessingOperation>();
   return (
     <aside className="detail-panel">
       <div className="detail-heading">
@@ -347,13 +348,15 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             )}
             {canRemoveImageBackground(asset) && <button className="secondary-button background-removal-trigger" onClick={() => setBackgroundRemovalOpen(true)}><Scissors size={14} /> 一键抠图</button>}
             {canCompressPng(asset) && <button className="secondary-button png-compression-trigger" onClick={() => setPngCompressionOpen(true)}><Minimize2 size={14} /> 一键压缩</button>}
+            {canConvertFsb(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("fsbToWav")}><FileAudio size={14} /> FSB 转 WAV</button>}
+            {canUseStandardAudioTools(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("formatConversion")}><ArrowLeftRight size={14} /> 格式转换</button>}
+            {canUseStandardAudioTools(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("compression")}><Gauge size={14} /> 音频压缩</button>}
             <button className="icon-button" onClick={() => onAction("更多操作菜单已打开")} aria-label="更多操作"><MoreHorizontal size={17} /></button>
           </div>
 
           {asset.hasUpdate && (
             <button className="online-update" onClick={() => onAction("资源版本对比已打开")}>
               <span><Sparkles size={15} /> 在线资源有新版本</span>
-  const [audioProcessingOperation, setAudioProcessingOperation] = useState<AudioProcessingOperation>();
               <ChevronRight size={15} />
             </button>
           )}
@@ -404,9 +407,6 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           onClose={() => setTagPickerOpen(false)}
           onSave={(tagIds) => onSetTags(asset, tagIds)}
           onCreate={onCreateTag}
-            {canConvertFsb(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("fsbToWav")}><FileAudio size={14} /> FSB 转 WAV</button>}
-            {canUseStandardAudioTools(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("formatConversion")}><ArrowLeftRight size={14} /> 格式转换</button>}
-            {canUseStandardAudioTools(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("compression")}><Gauge size={14} /> 音频压缩</button>}
           onCreateGroup={onCreateTagGroup}
         />
       )}
@@ -429,9 +429,6 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           onSaved={(result) => onPngCompressed(asset, result)}
         />
       )}
-    </aside>
-  );
-}
       {asset && audioProcessingOperation && (
         <AudioProcessingDialog
           key={`${asset.id}-${audioProcessingOperation}`}
@@ -441,3 +438,6 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           onSaved={(result) => onAudioProcessed(asset, result)}
         />
       )}
+    </aside>
+  );
+}
