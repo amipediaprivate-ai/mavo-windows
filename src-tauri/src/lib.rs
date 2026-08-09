@@ -39,6 +39,7 @@ use tauri::{
 
 mod audio_processing;
 mod background_removal;
+mod double_background_removal;
 mod png_compression;
 mod projects;
 
@@ -5022,6 +5023,10 @@ pub fn run() {
             background_removal::read_background_removal_preview,
             background_removal::save_background_removal,
             background_removal::discard_background_removal,
+            double_background_removal::remove_image_background_by_double_background,
+            double_background_removal::read_double_background_removal_preview,
+            double_background_removal::save_double_background_removal,
+            double_background_removal::discard_double_background_removal,
             png_compression::compress_png,
             png_compression::read_png_compression_preview,
             png_compression::save_png_compression,

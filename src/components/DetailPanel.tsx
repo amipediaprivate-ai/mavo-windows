@@ -33,6 +33,11 @@ import { TagPicker } from "./TagPicker";
 import { ProjectMembershipSection } from "./ProjectMembershipSection";
 import { BackgroundRemovalDialog } from "./BackgroundRemovalDialog";
 import { canRemoveImageBackground, type SaveBackgroundRemovalResult } from "../lib/backgroundRemoval";
+import { DoubleBackgroundRemovalDialog } from "./DoubleBackgroundRemovalDialog";
+import {
+  canUseDoubleBackgroundRemoval,
+  type SaveDoubleBackgroundRemovalResult,
+} from "../lib/doubleBackgroundRemoval";
 import { PngCompressionDialog } from "./PngCompressionDialog";
 import { canCompressPng, type SavePngCompressionResult } from "../lib/pngCompression";
 
@@ -52,6 +57,7 @@ interface DetailPanelProps {
   onRelink: (asset: Asset) => void;
   onRename: (asset: Asset, newStem: string) => Promise<void>;
   onBackgroundRemoved: (asset: Asset, result: SaveBackgroundRemovalResult) => void;
+  onDoubleBackgroundRemoved: (asset: Asset, result: SaveDoubleBackgroundRemovalResult) => void;
   onPngCompressed: (asset: Asset, result: SavePngCompressionResult) => void;
   onUpdateMetadata: (asset: Asset, input: AssetMetadataInput) => Promise<AssetMetadata>;
   onAudioProcessed: (asset: Asset, result: SaveAudioProcessingResult) => void;
@@ -292,10 +298,11 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onPngCompressed, onAudioProcessed, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onDoubleBackgroundRemoved, onPngCompressed, onAudioProcessed, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [backgroundRemovalOpen, setBackgroundRemovalOpen] = useState(false);
+  const [doubleBackgroundRemovalOpen, setDoubleBackgroundRemovalOpen] = useState(false);
   const [pngCompressionOpen, setPngCompressionOpen] = useState(false);
   const [audioProcessingOperation, setAudioProcessingOperation] = useState<AudioProcessingOperation>();
   return (
@@ -338,7 +345,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
             )}
           </div>
 
-          <div className={`detail-actions ${canConvertFsb(asset) ? "with-audio-tools fsb-only" : canUseStandardAudioTools(asset) ? "with-audio-tools" : canCompressPng(asset) ? "with-image-tools" : canRemoveImageBackground(asset) ? "with-background-removal" : ""}`}>
+          <div className={`detail-actions ${canConvertFsb(asset) ? "with-audio-tools fsb-only" : canUseStandardAudioTools(asset) ? "with-audio-tools" : canUseDoubleBackgroundRemoval(asset) ? `with-image-tools ${canCompressPng(asset) ? "with-three-image-tools" : ""}` : canCompressPng(asset) ? "with-image-tools" : canRemoveImageBackground(asset) ? "with-background-removal" : ""}`}>
             {asset.availability === "missing" ? (
               <button className="primary-button" onClick={() => onRelink(asset)}>重新定位文件</button>
             ) : asset.kind === "音频" || asset.kind === "视频" ? (
@@ -347,6 +354,7 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
               <button className="primary-button" onClick={() => onViewOriginal(asset)}>查看原图</button>
             )}
             {canRemoveImageBackground(asset) && <button className="secondary-button background-removal-trigger" onClick={() => setBackgroundRemovalOpen(true)}><Scissors size={14} /> 一键抠图</button>}
+            {canUseDoubleBackgroundRemoval(asset) && <button className="secondary-button double-background-removal-trigger" onClick={() => setDoubleBackgroundRemovalOpen(true)}><Sparkles size={14} /> 移除图片背景</button>}
             {canCompressPng(asset) && <button className="secondary-button png-compression-trigger" onClick={() => setPngCompressionOpen(true)}><Minimize2 size={14} /> 一键压缩</button>}
             {canConvertFsb(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("fsbToWav")}><FileAudio size={14} /> FSB 转 WAV</button>}
             {canUseStandardAudioTools(asset) && <button className="secondary-button audio-tool-trigger" onClick={() => setAudioProcessingOperation("formatConversion")}><ArrowLeftRight size={14} /> 格式转换</button>}
@@ -427,6 +435,14 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           asset={asset}
           onClose={() => setPngCompressionOpen(false)}
           onSaved={(result) => onPngCompressed(asset, result)}
+        />
+      )}
+      {asset && doubleBackgroundRemovalOpen && (
+        <DoubleBackgroundRemovalDialog
+          key={asset.id}
+          asset={asset}
+          onClose={() => setDoubleBackgroundRemovalOpen(false)}
+          onSaved={(result) => onDoubleBackgroundRemoved(asset, result)}
         />
       )}
       {asset && audioProcessingOperation && (

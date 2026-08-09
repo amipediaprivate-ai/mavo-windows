@@ -440,11 +440,52 @@ fn save_background_removal_blocking(
     app: AppHandle,
 ) -> Result<SaveBackgroundRemovalResult, String> {
     let job = job_for(&request.job_id, request.asset_id)?;
-    let result = match request.mode.as_str() {
+    let result = save_transparent_image_result(
+        request.asset_id,
+        &job.source_path,
+        &job.result_path,
+        job.width,
+        job.height,
+        &request.job_id,
+        &request.mode,
+        request.directory.as_deref(),
+        request.file_stem.as_deref(),
+        &app,
+    )?;
+
+    if let Ok(mut current) = jobs().lock() {
+        current.remove(&request.job_id);
+    }
+    let _ = fs::remove_file(&job.result_path);
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save_transparent_image_result(
+    asset_id: i64,
+    source_path: &Path,
+    result_path: &Path,
+    width: u32,
+    height: u32,
+    job_id: &str,
+    mode: &str,
+    directory: Option<&str>,
+    file_stem: Option<&str>,
+    app: &AppHandle,
+) -> Result<SaveBackgroundRemovalResult, String> {
+    let job = RemovalJob {
+        asset_id,
+        source_path: source_path.to_path_buf(),
+        result_path: result_path.to_path_buf(),
+        width,
+        height,
+        created_at_ms: now_ms(),
+    };
+    match mode {
         "saveAs" | "sourceDirectory" => {
-            let stem = validated_asset_stem(request.file_stem.as_deref().unwrap_or_default())?;
-            let directory = if request.mode == "saveAs" {
-                let value = request.directory.as_deref().unwrap_or_default().trim();
+            let stem = validated_asset_stem(file_stem.unwrap_or_default())?;
+            let directory = if mode == "saveAs" {
+                let value = directory.unwrap_or_default().trim();
                 if value.is_empty() {
                     return Err("请选择另存文件夹".to_string());
                 }
@@ -459,22 +500,16 @@ fn save_background_removal_blocking(
                 return Err("保存文件夹不存在或无法访问".to_string());
             }
             let target = directory.join(format!("{stem}.png"));
-            copy_new_result(&job, &target, &request.job_id)?;
+            copy_new_result(&job, &target, job_id)?;
             Ok(SaveBackgroundRemovalResult {
                 path: target.to_string_lossy().into_owned(),
                 asset_name: None,
                 overwrote_original: false,
             })
         }
-        "overwrite" => overwrite_original(&job, &request.job_id, &app),
+        "overwrite" => overwrite_original(&job, job_id, app),
         _ => Err("不支持的保存方式".to_string()),
-    }?;
-
-    if let Ok(mut current) = jobs().lock() {
-        current.remove(&request.job_id);
     }
-    let _ = fs::remove_file(&job.result_path);
-    Ok(result)
 }
 
 #[tauri::command]

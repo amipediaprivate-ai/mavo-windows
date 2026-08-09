@@ -5,7 +5,8 @@
 - 目标项目：Caevir Windows（`mavo-windows`）
 - 功能入口：图片资源明细
 - 按钮名称：**移除图片背景**
-- 当前阶段：需求与技术方案，尚未进入功能实现
+- 当前阶段：已完成首版实现，等待真实业务素材验收与参数校准
+- 实现日期：2026-08-09
 - 参考实现：`E:\Projects\imgae-data-tools-online\lib\doubleBackgroundMatte.ts` 与 `components\DoubleBackgroundMatteTool.tsx`
 - 参考版本：`5951681b8b2fa746e180d47895852e97e4454464`
 
@@ -140,6 +141,7 @@ AVIF、HEIC/HEIF、DNG/RAW、TGA、HDR、EXR、ICO 等虽然可能被索引为�
 
 - 在 Rust 后端使用现有 `image` crate 解码为 RGBA8，不引入新的 Python、模型或外部进程；
 - 复用现有预览安全限制：单边最大 `16,384` 像素、总像素最大 `64 × 1024 × 1024`、解码分配最大 `256 MiB`；
+- 由于该流程会同时保留源图、配对图、结果图和多份蒙版缓冲，首版额外设置 `12 × 1024 × 1024` 像素工作集上限，防止大图处理耗尽内存；
 - 保留原始宽高，不缩放后再处理；
 - 结果统一编码为 8 位 RGBA PNG；
 - 后台计算通过 `spawn_blocking` 执行，避免阻塞 Tauri 异步运行时。
@@ -277,7 +279,8 @@ interface DoubleBackgroundRemovalResult {
 
 现有 `background_removal.rs` 已实现成熟的临时任务、预览读取、三种保存方式、原子覆盖、SQLite 更新和缩略图失效逻辑。新功能不应复制一份长期分叉的保存代码。
 
-实现时建议先把算法无关部分提取为 `src-tauri/src/image_transform_result.rs`：
+首版实现从现有 `background_removal.rs` 暴露算法无关的内部保存入口
+`save_transparent_image_result`，供 BiRefNet 和双背景流程共同调用，覆盖以下能力：
 
 - 任务 ID、源资源归属、创建时间和结果路径；
 - 24 小时过期清理；

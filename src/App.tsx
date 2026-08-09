@@ -63,6 +63,7 @@ import {
 import { openAssetFolder, openOriginalAsset } from "./lib/desktopAssets";
 import type { Asset, AssetKind, AssetView, Filters, ScanScope } from "./types";
 import type { SaveBackgroundRemovalResult } from "./lib/backgroundRemoval";
+import type { SaveDoubleBackgroundRemovalResult } from "./lib/doubleBackgroundRemoval";
 import type { SavePngCompressionResult } from "./lib/pngCompression";
 import type { SaveAudioProcessingResult } from "./lib/audioProcessing";
 
@@ -769,6 +770,20 @@ export default function App() {
     showToast(`抠图结果已保存到 ${result.path}`);
   };
 
+  const handleDoubleBackgroundRemoved = (asset: Asset, result: SaveDoubleBackgroundRemovalResult) => {
+    if (result.overwroteOriginal && result.assetName) {
+      const patch = { name: result.assetName, format: "PNG", localPath: result.path, thumbnailUrl: undefined };
+      setLibraryAssets((current) => current.map((item) => item.id === asset.id ? { ...item, ...patch } : item));
+      const cached = selectedAssetCache.current.get(asset.id);
+      if (cached) selectedAssetCache.current.set(asset.id, { ...cached, ...patch });
+    }
+    setIndexRevision((revision) => revision + 1);
+    void enrichPendingPreviews(() => undefined)
+      .then(() => setIndexRevision((revision) => revision + 1))
+      .catch(() => undefined);
+    showToast(`去背景结果已保存到 ${result.path}`);
+  };
+
   const handlePngCompressed = (asset: Asset, result: SavePngCompressionResult) => {
     if (result.overwroteOriginal) {
       const patch = { name: result.assetName || asset.name, localPath: result.path, thumbnailUrl: undefined };
@@ -1032,6 +1047,7 @@ export default function App() {
             onRelink={(asset) => void handleRelink(asset)}
             onRename={handleRename}
             onBackgroundRemoved={handleBackgroundRemoved}
+            onDoubleBackgroundRemoved={handleDoubleBackgroundRemoved}
             onPngCompressed={handlePngCompressed}
             onUpdateMetadata={handleUpdateAssetMetadata}
             onMetadataResolved={applyAssetMetadata}
