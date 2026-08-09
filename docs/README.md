@@ -4,4 +4,8 @@
 
 跨 Windows 与 Web 的共用文档应放在父目录 `mavo/docs/`，不要提交到 Windows 仓库。
 
+- [`project-module-requirements-and-technical-design.md`](project-module-requirements-and-technical-design.md)：项目模块的整体需求与技术设计。
+- [`background-removal-design.md`](background-removal-design.md)：基于 rembg + BiRefNet 的“一键抠图”需求与技术设计。
+- [`double-background-removal-design.md`](double-background-removal-design.md)：图片明细“移除图片背景”的纯色背景识别、配对图生成与黑白双背景差分方案。
+- [`png-compression-design.md`](png-compression-design.md)：PNG 压缩功能的需求与技术设计。
 - [`audio-processing-design.md`](audio-processing-design.md)：音频 FSB 转 WAV、格式转换与压缩的需求、交互、技术方案和验收标准。
