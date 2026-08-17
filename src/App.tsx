@@ -246,7 +246,7 @@ export default function App() {
         page.items.forEach((asset) => {
           if (selectedIds.has(asset.id)) selectedAssetCache.current.set(asset.id, asset);
         });
-        if (page.total !== undefined) setIndexedTotal(page.total);
+        if (page.total != null) setIndexedTotal(page.total);
       }
     } catch (error) {
       // Running the React preview outside Tauri keeps the bundled demo library available.

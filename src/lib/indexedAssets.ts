@@ -51,8 +51,8 @@ export interface AssetMetadataInput {
 
 export interface IndexedAssetPage {
   items: IndexedAssetRecord[];
-  nextOffset?: number;
-  total?: number;
+  nextOffset?: number | null;
+  total?: number | null;
 }
 
 export interface LoadIndexedAssetsOptions {
@@ -164,9 +164,9 @@ export interface BackgroundTask {
   title: string;
   status: "running" | "completed" | "cancelled" | "failed";
   completed: number;
-  total?: number;
-  currentItem?: string;
-  message?: string;
+  total?: number | null;
+  currentItem?: string | null;
+  message?: string | null;
   startedAtMs: number;
   updatedAtMs: number;
 }

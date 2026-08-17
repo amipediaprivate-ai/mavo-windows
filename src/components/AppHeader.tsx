@@ -89,7 +89,7 @@ export function AppHeader({
     });
     return ordered.slice(0, 8);
   }, [backgroundTasks]);
-  const knownProgress = runningTasks.filter((task) => task.total !== undefined && task.total > 0);
+  const knownProgress = runningTasks.filter((task) => task.total != null && task.total > 0);
   const overallProgress = knownProgress.length
     ? knownProgress.reduce((sum, task) => sum + Math.min(task.completed / (task.total ?? 1), 1), 0) / knownProgress.length
     : runningTasks.length ? undefined : 1;
@@ -249,11 +249,12 @@ export function AppHeader({
                       <span>扫描、分析和缩略图任务会显示在这里</span>
                     </div>
                   ) : visibleTasks.map((task) => {
-                    const progress = task.total === undefined
+                    const total = task.total ?? undefined;
+                    const progress = total === undefined
                       ? undefined
-                      : task.total === 0
+                      : total === 0
                         ? Number(task.status === "completed")
-                        : Math.min(task.completed / task.total, 1);
+                        : Math.min(task.completed / total, 1);
                     const statusLabel = task.status === "running" ? "进行中" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
                     return (
                       <article className={`background-task-item ${task.status}`} key={task.id}>
@@ -263,12 +264,12 @@ export function AppHeader({
                             <strong>{task.title}</strong>
                             <span>{statusLabel}</span>
                           </div>
-                          <p title={task.currentItem || task.message}>{task.currentItem || task.message}</p>
+                          <p title={task.currentItem || task.message || undefined}>{task.currentItem || task.message}</p>
                           <div className={`background-task-track ${progress === undefined && task.status === "running" ? "indeterminate" : ""}`}>
                             <span style={progress === undefined ? undefined : { width: `${progress * 100}%` }} />
                           </div>
                           <div className="background-task-meta">
-                            <span>{task.total !== undefined ? `${task.completed.toLocaleString("zh-CN")} / ${task.total.toLocaleString("zh-CN")}` : `已检查 ${task.completed.toLocaleString("zh-CN")} 项`}</span>
+                            <span>{total !== undefined ? `${task.completed.toLocaleString("zh-CN")} / ${total.toLocaleString("zh-CN")}` : `已检查 ${task.completed.toLocaleString("zh-CN")} 项`}</span>
                             {progress !== undefined && <strong>{Math.round(progress * 100)}%</strong>}
                           </div>
                         </div>

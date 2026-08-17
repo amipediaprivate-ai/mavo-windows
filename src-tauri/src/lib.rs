@@ -146,8 +146,11 @@ struct BackgroundTask {
     title: String,
     status: String,
     completed: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     current_item: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
     started_at_ms: u64,
     updated_at_ms: u64,
@@ -473,7 +476,9 @@ struct MediaEnrichment {
 #[serde(rename_all = "camelCase")]
 struct AssetPage {
     items: Vec<IndexedAssetSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     next_offset: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<u64>,
 }
 
@@ -5071,6 +5076,35 @@ pub fn run() {
 mod tests {
     use super::*;
     use tauri::ipc::InvokeResponseBody;
+
+    #[test]
+    fn optional_progress_fields_are_omitted_from_frontend_payloads() {
+        let task = BackgroundTask {
+            id: "index:test".to_string(),
+            task_type: "index".to_string(),
+            title: "建立资源索引".to_string(),
+            status: "running".to_string(),
+            completed: 12,
+            total: None,
+            current_item: None,
+            message: None,
+            started_at_ms: 1,
+            updated_at_ms: 2,
+        };
+        let task_json = serde_json::to_value(task).unwrap();
+        assert!(task_json.get("total").is_none());
+        assert!(task_json.get("currentItem").is_none());
+        assert!(task_json.get("message").is_none());
+
+        let page_json = serde_json::to_value(AssetPage {
+            items: Vec::new(),
+            next_offset: None,
+            total: None,
+        })
+        .unwrap();
+        assert!(page_json.get("nextOffset").is_none());
+        assert!(page_json.get("total").is_none());
+    }
 
     #[test]
     fn asset_sorting_keeps_failed_metadata_at_the_end() {
