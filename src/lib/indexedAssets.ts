@@ -37,7 +37,19 @@ export interface IndexedAssetRecord {
   pinyin: string;
   aiPromptEnglish: string;
   aiPromptChinese: string;
+  palette: string[];
   tags: AssetTag[];
+}
+
+export interface SimilarAssetMatch {
+  id: number;
+  name: string;
+  format: string;
+  kind: AssetKind;
+  thumbnailPath?: string | null;
+  palette: string[];
+  distance: number;
+  similarity: number;
 }
 
 export interface AssetMetadata {
@@ -256,7 +268,9 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     aiPromptChinese: record.aiPromptChinese,
     importedAt: formatDate(record.indexedAtMs),
     modifiedAt: formatDate(record.modifiedMs),
-    palette: ["#26324a", "#42658a", "#182033"],
+    palette: record.palette.length >= 3
+      ? [record.palette[0], record.palette[1], record.palette[2]]
+      : ["#26324a", "#42658a", "#182033"],
     motif: motifFor(record.kind),
     localPath: record.path,
     thumbnailUrl: record.thumbnailPath ? convertFileSrc(record.thumbnailPath) : undefined,
@@ -304,6 +318,21 @@ export function buildAssetQuery(options: LoadIndexedAssetsOptions = {}): AssetQu
 export async function loadIndexedAssets(options: LoadIndexedAssetsOptions = {}) {
   const page = await invoke<IndexedAssetPage>("list_indexed_assets", { query: buildAssetQuery(options) });
   return { ...page, items: page.items.map(toAsset) };
+}
+
+export async function findSimilarAssets(asset: Asset, limit = 24, maxDistance = 18) {
+  if (!asset.id.startsWith("indexed-")) throw new Error("演示资源没有可用的视觉特征");
+  const assetId = Number.parseInt(asset.id.slice("indexed-".length), 10);
+  if (!Number.isSafeInteger(assetId)) throw new Error("资源 ID 无效");
+  const matches = await invoke<SimilarAssetMatch[]>("find_similar_assets", {
+    assetId,
+    limit,
+    maxDistance,
+  });
+  return matches.map((match) => ({
+    ...match,
+    thumbnailUrl: match.thumbnailPath ? convertFileSrc(match.thumbnailPath) : undefined,
+  }));
 }
 
 export async function loadAssetFacets(options: LoadIndexedAssetsOptions = {}) {

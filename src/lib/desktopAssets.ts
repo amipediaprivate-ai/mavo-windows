@@ -1,10 +1,19 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Asset } from "../types";
 
-function indexedAssetId(asset: Asset) {
+export function indexedAssetId(asset: Asset) {
   if (!asset.id.startsWith("indexed-")) return undefined;
   const id = Number.parseInt(asset.id.slice("indexed-".length), 10);
   return Number.isSafeInteger(id) ? id : undefined;
+}
+
+
+export function indexedAssetStreamUrl(asset: Asset) {
+  const assetId = indexedAssetId(asset);
+  if (assetId === undefined || asset.availability === "missing") {
+    throw new Error("该资源没有可读取的本地文件");
+  }
+  return convertFileSrc(`indexed-${assetId}`, "caevir-media");
 }
 
 export function canLoadOriginal(asset: Asset) {
@@ -29,13 +38,13 @@ export function canPlayAnimatedImage(asset: Asset) {
 export function audioPlaybackUrl(asset: Asset) {
   const assetId = indexedAssetId(asset);
   if (assetId === undefined || asset.kind !== "音频") throw new Error("该资源没有可播放的本地音频");
-  return convertFileSrc(`indexed-${assetId}`, "caevir-media");
+  return indexedAssetStreamUrl(asset);
 }
 
 export function videoPlaybackUrl(asset: Asset) {
   const assetId = indexedAssetId(asset);
   if (assetId === undefined || asset.kind !== "视频") throw new Error("该资源没有可播放的本地视频");
-  return convertFileSrc(`indexed-${assetId}`, "caevir-media");
+  return indexedAssetStreamUrl(asset);
 }
 
 export async function loadOriginalAsset(asset: Asset) {

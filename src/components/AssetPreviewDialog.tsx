@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
-import { canLoadOriginal, loadOriginalAsset } from "../lib/desktopAssets";
+import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { findSimilarAssets, type SimilarAssetMatch } from "../lib/indexedAssets";
 import type { Asset } from "../types";
-import { AssetThumbnail } from "./AssetThumbnail";
+import { PreviewAdapterView } from "./previews/PreviewAdapter";
 
 interface AssetPreviewDialogProps {
   assets: Asset[];
@@ -14,9 +14,9 @@ interface AssetPreviewDialogProps {
 export function AssetPreviewDialog({ assets, activeId, onActiveChange, onClose }: AssetPreviewDialogProps) {
   const activeIndex = assets.findIndex((asset) => asset.id === activeId);
   const asset = activeIndex >= 0 ? assets[activeIndex] : undefined;
-  const [originalUrl, setOriginalUrl] = useState<string>();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [similar, setSimilar] = useState<(SimilarAssetMatch & { thumbnailUrl?: string })[]>();
+  const [similarLoading, setSimilarLoading] = useState(false);
+  const [similarError, setSimilarError] = useState("");
 
   const canGoPrevious = assets.length > 1;
   const canGoNext = assets.length > 1;
@@ -30,38 +30,22 @@ export function AssetPreviewDialog({ assets, activeId, onActiveChange, onClose }
   };
 
   useEffect(() => {
-    if (!asset || !canLoadOriginal(asset)) {
-      setOriginalUrl(undefined);
-      setLoading(false);
-      setError(asset?.localPath ? "该格式暂不支持原图预览" : "演示资源暂无本地原图");
-      return;
-    }
+    setSimilar(undefined);
+    setSimilarError("");
+  }, [asset?.id]);
 
-    let disposed = false;
-    let nextUrl: string | undefined;
-    setOriginalUrl(undefined);
-    setError("");
-    setLoading(true);
-    void loadOriginalAsset(asset)
-      .then((url) => {
-        nextUrl = url;
-        if (disposed) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        setOriginalUrl(url);
-      })
-      .catch((loadError) => {
-        if (!disposed) setError(loadError instanceof Error ? loadError.message : "无法读取原图");
-      })
-      .finally(() => {
-        if (!disposed) setLoading(false);
-      });
-    return () => {
-      disposed = true;
-      if (nextUrl) URL.revokeObjectURL(nextUrl);
-    };
-  }, [asset]);
+  const showSimilar = async () => {
+    if (!asset) return;
+    setSimilarLoading(true);
+    setSimilarError("");
+    try {
+      setSimilar(await findSimilarAssets(asset));
+    } catch (reason) {
+      setSimilarError(reason instanceof Error ? reason.message : "无法查找相似资源");
+    } finally {
+      setSimilarLoading(false);
+    }
+  };
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -88,19 +72,17 @@ export function AssetPreviewDialog({ assets, activeId, onActiveChange, onClose }
             <strong title={asset.name}>{asset.name}</strong>
             <span>{asset.format} · {asset.dimensions} · {positionLabel}</span>
           </div>
+          {(asset.kind === "图片" || asset.kind === "动图" || asset.format.toUpperCase() === "PSD") && asset.id.startsWith("indexed-") && (
+            <button className="asset-preview-similar-button" onClick={() => void showSimilar()} disabled={similarLoading}>
+              <Search size={16} /> {similarLoading ? "分析中…" : "查找相似"}
+            </button>
+          )}
           <button className="asset-preview-close" onClick={onClose} aria-label="关闭原图预览" title="关闭">
             <X size={20} />
           </button>
         </header>
         <div className="asset-preview-stage">
-          {originalUrl ? (
-            <img src={originalUrl} alt={`${asset.name} 原图`} />
-          ) : (
-            <div className="asset-preview-fallback">
-              <AssetThumbnail asset={asset} large />
-              {loading ? <span>正在读取原图…</span> : error && <span>{error}</span>}
-            </div>
-          )}
+          <PreviewAdapterView asset={asset} />
           <button className="asset-preview-nav previous" onClick={showPrevious} disabled={!canGoPrevious} aria-label="查看上一张">
             <ChevronLeft size={28} />
           </button>
@@ -108,6 +90,27 @@ export function AssetPreviewDialog({ assets, activeId, onActiveChange, onClose }
             <ChevronRight size={28} />
           </button>
         </div>
+        {(similar || similarError) && (
+          <aside className="asset-similar-results" aria-label="相似资源">
+            <div className="asset-similar-heading">
+              <strong>相似资源</strong>
+              <span>{similar?.length ?? 0} 项 · dHash 汉明距离</span>
+            </div>
+            {similarError ? <p>{similarError}</p> : similar?.length ? (
+              <div className="asset-similar-strip">
+                {similar.map((match) => (
+                  <article key={match.id} title={`${match.name} · 距离 ${match.distance}`}>
+                    <div style={{ background: `linear-gradient(135deg, ${match.palette[0] ?? "#26324a"}, ${match.palette[1] ?? "#42658a"})` }}>
+                      {match.thumbnailUrl && <img src={match.thumbnailUrl} alt="" />}
+                    </div>
+                    <strong>{match.name}</strong>
+                    <span>{Math.round(match.similarity * 100)}% · {match.format}</span>
+                  </article>
+                ))}
+              </div>
+            ) : <p>在当前视觉距离阈值内没有找到相似资源。</p>}
+          </aside>
+        )}
       </section>
     </div>
   );

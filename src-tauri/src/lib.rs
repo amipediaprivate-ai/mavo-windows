@@ -1,7 +1,7 @@
 use ignore::{WalkBuilder, WalkState};
 use image::{
-    codecs::jpeg::JpegEncoder, DynamicImage, ExtendedColorType, GenericImageView, ImageBuffer,
-    ImageFormat, ImageReader, Limits, Rgba,
+    codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, ExtendedColorType,
+    GenericImageView, ImageBuffer, ImageFormat, ImageReader, Limits, Rgba,
 };
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use psd::Psd;
@@ -82,16 +82,16 @@ const MAX_IMAGE_PREVIEW_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PREVIEW_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 const BACKGROUND_IDLE_GRACE_MS: u64 = 700;
 const PREVIEW_REFRESH_INTERVAL: usize = 64;
-const PREVIEW_WORKER_COUNT: usize = 1;
 const PREVIEW_COMMIT_BATCH_SIZE: usize = 8;
 const MAX_MEDIA_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_PREVIEW_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
 
 const ASSET_EXTENSIONS: &[&str] = &[
     "3ds", "aac", "ai", "aif", "aiff", "ase", "aseprite", "avif", "avi", "blend", "bmp", "cdr",
     "clip", "dae", "dng", "eps", "exr", "fbx", "fig", "flac", "flv", "gif", "glb", "gltf", "hdr",
     "heic", "heif", "ico", "indd", "jpeg", "jpg", "kra", "m4a", "m4v", "max", "mkv", "mov", "mp3",
     "mp4", "obj", "ogg", "otf", "pdf", "png", "psb", "psd", "raw", "sketch", "svg", "tga", "tif",
-    "tiff", "ttf", "wav", "webm", "webp", "wma", "wmv", "woff", "woff2", "xd", "fsb",
+    "tiff", "ttf", "stl", "wav", "webm", "webp", "wma", "wmv", "woff", "woff2", "xd", "fsb",
 ];
 
 #[derive(Clone, Default)]
@@ -119,6 +119,10 @@ impl BackgroundTaskManager {
 
     fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Relaxed)
+    }
+
+    fn idle_ms(&self) -> u64 {
+        now_ms().saturating_sub(self.last_user_interaction_ms.load(Ordering::Relaxed))
     }
 
     fn wait_until_background_allowed(&self) {
@@ -430,7 +434,58 @@ struct IndexedAssetSummary {
     pinyin: String,
     ai_prompt_english: String,
     ai_prompt_chinese: String,
+    palette: Vec<String>,
     tags: Vec<AssetTagSummary>,
+}
+
+fn adaptive_preview_worker_count(
+    available_cpus: usize,
+    pending: &[(String, i64, String, u64)],
+    idle_ms: u64,
+) -> usize {
+    if pending.is_empty() {
+        return 1;
+    }
+    let cpu_budget = available_cpus.saturating_sub(1).clamp(1, 4);
+    if idle_ms < 2_500 {
+        return 1;
+    }
+    let has_heavy = pending.iter().any(|(path, _, kind, size)| {
+        matches!(kind.as_str(), "视频" | "音频")
+            || *size >= 96 * 1024 * 1024
+            || matches!(
+                Path::new(path)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "psd" | "psb" | "tif" | "tiff" | "exr" | "hdr"
+            )
+    });
+    if has_heavy {
+        1
+    } else if pending
+        .iter()
+        .any(|(_, _, _, size)| *size >= 32 * 1024 * 1024)
+    {
+        cpu_budget.min(2)
+    } else {
+        cpu_budget.min(pending.len())
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SimilarAssetMatch {
+    id: i64,
+    name: String,
+    format: String,
+    kind: String,
+    thumbnail_path: Option<String>,
+    palette: Vec<String>,
+    distance: u32,
+    similarity: f64,
 }
 
 #[derive(Clone, Deserialize)]
@@ -483,6 +538,13 @@ struct MediaEnrichment {
     duration_ms: Option<i64>,
     thumbnail_path: Option<String>,
     audio: Option<AudioStreamInfo>,
+    visual_features: Option<VisualFeatures>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct VisualFeatures {
+    dhash: String,
+    palette: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -507,7 +569,7 @@ fn asset_kind(extension: &str) -> &'static str {
         "gif" | "ase" | "aseprite" => "动图",
         "mp4" | "mov" | "mkv" | "avi" | "webm" | "wmv" | "m4v" | "flv" => "视频",
         "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "aif" | "aiff" | "wma" | "fsb" => "音频",
-        "fbx" | "obj" | "glb" | "gltf" | "blend" | "3ds" | "dae" | "max" => "3D 模型",
+        "fbx" | "obj" | "glb" | "gltf" | "blend" | "3ds" | "dae" | "max" | "stl" => "3D 模型",
         "ttf" | "otf" | "woff" | "woff2" => "字体",
         "pdf" => "文档",
         "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff" | "avif" | "heic" | "heif"
@@ -740,10 +802,28 @@ fn initialize_database_schema(connection: &Connection) -> Result<(), String> {
                PRIMARY KEY(asset_uid, tag_id),
                FOREIGN KEY(tag_id) REFERENCES tags(id) ON DELETE CASCADE
              );
+             CREATE TABLE IF NOT EXISTS asset_visual_features (
+               asset_uid TEXT PRIMARY KEY,
+               modified_ms INTEGER NOT NULL,
+               dhash TEXT NOT NULL,
+               palette_json TEXT NOT NULL,
+               feature_version INTEGER NOT NULL DEFAULT 1
+             );
              CREATE INDEX IF NOT EXISTS indexed_assets_extension_idx ON indexed_assets(extension);
              CREATE INDEX IF NOT EXISTS indexed_assets_scan_root_idx ON indexed_assets(scan_root);
              CREATE INDEX IF NOT EXISTS asset_tags_tag_idx ON asset_tags(tag_id, asset_uid);
-             CREATE INDEX IF NOT EXISTS tags_group_idx ON tags(group_id, archived);",
+             CREATE INDEX IF NOT EXISTS tags_group_idx ON tags(group_id, archived);
+             CREATE INDEX IF NOT EXISTS asset_visual_features_hash_idx
+               ON asset_visual_features(dhash);
+             CREATE TRIGGER IF NOT EXISTS indexed_assets_visual_features_delete
+             AFTER DELETE ON indexed_assets BEGIN
+               DELETE FROM asset_visual_features WHERE asset_uid = old.asset_uid;
+             END;
+             CREATE TRIGGER IF NOT EXISTS indexed_assets_visual_features_invalidate
+             AFTER UPDATE OF modified_ms ON indexed_assets
+             WHEN old.modified_ms <> new.modified_ms BEGIN
+               DELETE FROM asset_visual_features WHERE asset_uid = old.asset_uid;
+             END;",
         )
         .map_err(|error| error.to_string())?;
     migrate_indexed_assets(&connection)?;
@@ -766,6 +846,7 @@ fn validate_database_schema(connection: &Connection) -> Result<(), String> {
         "tags",
         "tag_kind_scopes",
         "asset_tags",
+        "asset_visual_features",
         "indexed_assets_fts",
         "projects",
         "project_assets",
@@ -1575,7 +1656,12 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
                 audio_codec, audio_endianness, audio_frame_size, thumbnail_path, metadata_status,
                 integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_status, availability,
                 original_source_method, original_source_url, author, author_status,
-                chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese
+                chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese,
+                COALESCE((
+                  SELECT visual.palette_json FROM asset_visual_features visual
+                  WHERE visual.asset_uid = indexed_assets.asset_uid
+                    AND visual.modified_ms = indexed_assets.modified_ms
+                ), '[]')
          FROM indexed_assets WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
     );
     let mut page_values = values;
@@ -1626,6 +1712,7 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
                 pinyin: row.get(30)?,
                 ai_prompt_english: row.get(31)?,
                 ai_prompt_chinese: row.get(32)?,
+                palette: serde_json::from_str(&row.get::<_, String>(33)?).unwrap_or_default(),
                 tags: Vec::new(),
             })
         })
@@ -2573,7 +2660,7 @@ fn indexed_media_asset(asset_id: i64, app: &AppHandle) -> Result<(PathBuf, Strin
     let (path, kind): (String, String) = connection
         .query_row(
             "SELECT path, kind FROM indexed_assets
-             WHERE rowid = ?1 AND kind IN ('音频', '视频') AND availability = 'available'",
+             WHERE rowid = ?1 AND availability = 'available'",
             params![asset_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -2762,6 +2849,18 @@ fn media_content_type(path: &Path) -> &'static str {
         "mp4" => "video/mp4",
         "webm" => "video/webm",
         "wmv" => "video/x-ms-wmv",
+        "pdf" => "application/pdf",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "3ds" => "application/x-3ds",
+        "dae" => "model/vnd.collada+xml",
+        "fbx" => "application/octet-stream",
+        "glb" => "model/gltf-binary",
+        "gltf" => "model/gltf+json",
+        "obj" => "model/obj",
+        "stl" => "model/stl",
         _ => "application/octet-stream",
     }
 }
@@ -2787,11 +2886,12 @@ fn media_error_response(
 fn bounded_media_response_range(
     requested_range: Option<(u64, u64)>,
     file_size: u64,
+    max_response_bytes: u64,
 ) -> (u64, u64, StatusCode) {
     let (start, requested_end) = requested_range.unwrap_or((0, file_size - 1));
     let end = requested_end.min(
         start
-            .saturating_add(MAX_MEDIA_RESPONSE_BYTES - 1)
+            .saturating_add(max_response_bytes - 1)
             .min(file_size - 1),
     );
     let status = if start > 0 || end < file_size - 1 {
@@ -2864,7 +2964,13 @@ fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
     if file_size == 0 {
         return media_error_response(StatusCode::NO_CONTENT, "媒体文件为空", None);
     }
-    let (start, end, status) = bounded_media_response_range(requested_range, file_size);
+    let max_response_bytes = if matches!(kind.as_str(), "音频" | "视频") {
+        MAX_MEDIA_RESPONSE_BYTES
+    } else {
+        MAX_PREVIEW_RESPONSE_BYTES
+    };
+    let (start, end, status) =
+        bounded_media_response_range(requested_range, file_size, max_response_bytes);
     let content_length = end - start + 1;
     let mut file = match File::open(&path) {
         Ok(file) => file,
@@ -3897,10 +4003,166 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
         .unwrap_or_else(|| "未知解码异常".to_string())
 }
 
-fn generate_image_preview(path: &Path, thumbnail_path: &Path) -> Result<(u32, u32), String> {
+fn visual_features(image: &DynamicImage) -> VisualFeatures {
+    let grayscale = image.resize_exact(9, 8, FilterType::Triangle).to_luma8();
+    let mut hash = 0_u64;
+    for y in 0..8 {
+        for x in 0..8 {
+            if grayscale.get_pixel(x, y)[0] > grayscale.get_pixel(x + 1, y)[0] {
+                hash |= 1_u64 << (y * 8 + x);
+            }
+        }
+    }
+
+    let sampled = image.thumbnail(96, 96).to_rgba8();
+    let mut buckets: HashMap<u16, (u32, u64, u64, u64)> = HashMap::new();
+    for pixel in sampled.pixels().filter(|pixel| pixel[3] >= 32) {
+        let key = (u16::from(pixel[0] >> 4) << 8)
+            | (u16::from(pixel[1] >> 4) << 4)
+            | u16::from(pixel[2] >> 4);
+        let entry = buckets.entry(key).or_default();
+        entry.0 += 1;
+        entry.1 += u64::from(pixel[0]);
+        entry.2 += u64::from(pixel[1]);
+        entry.3 += u64::from(pixel[2]);
+    }
+    let mut candidates = buckets
+        .into_values()
+        .filter(|(count, _, _, _)| *count > 0)
+        .map(|(count, red, green, blue)| {
+            (
+                count,
+                [
+                    (red / u64::from(count)) as u8,
+                    (green / u64::from(count)) as u8,
+                    (blue / u64::from(count)) as u8,
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    let mut colors: Vec<[u8; 3]> = Vec::with_capacity(3);
+    for (_, color) in candidates {
+        let distinct = colors.iter().all(|existing| {
+            let red = i32::from(existing[0]) - i32::from(color[0]);
+            let green = i32::from(existing[1]) - i32::from(color[1]);
+            let blue = i32::from(existing[2]) - i32::from(color[2]);
+            red * red + green * green + blue * blue >= 42 * 42
+        });
+        if distinct || colors.is_empty() {
+            colors.push(color);
+        }
+        if colors.len() == 3 {
+            break;
+        }
+    }
+    let fallbacks = [[38, 50, 74], [66, 101, 138], [24, 32, 51]];
+    while colors.len() < 3 {
+        colors.push(fallbacks[colors.len()]);
+    }
+    VisualFeatures {
+        dhash: format!("{hash:016x}"),
+        palette: colors
+            .into_iter()
+            .map(|[red, green, blue]| format!("#{red:02x}{green:02x}{blue:02x}"))
+            .collect(),
+    }
+}
+
+fn find_similar_assets_blocking(
+    asset_id: i64,
+    limit: u32,
+    max_distance: u32,
+    app: AppHandle,
+) -> Result<Vec<SimilarAssetMatch>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = open_database(&app_data_dir.join("caevir-index.sqlite3"))?;
+    let (source_uid, source_hash): (String, String) = connection
+        .query_row(
+            "SELECT asset.asset_uid, visual.dhash
+             FROM indexed_assets asset
+             JOIN asset_visual_features visual ON visual.asset_uid = asset.asset_uid
+               AND visual.modified_ms = asset.modified_ms
+             WHERE asset.rowid = ?1 AND asset.availability = 'available'",
+            params![asset_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "该资源尚未生成视觉特征，请先完成缩略图分析".to_string())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT asset.rowid, asset.name, asset.extension, asset.kind,
+                    asset.thumbnail_path, visual.palette_json, visual.dhash
+             FROM indexed_assets asset
+             JOIN asset_visual_features visual ON visual.asset_uid = asset.asset_uid
+               AND visual.modified_ms = asset.modified_ms
+             WHERE asset.asset_uid <> ?1 AND asset.availability = 'available'
+               AND (asset.kind IN ('图片', '动图') OR asset.extension = 'psd')",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut matches = statement
+        .query_map(params![source_uid], |row| {
+            let candidate_hash: String = row.get(6)?;
+            let distance = dhash_distance(&source_hash, &candidate_hash).unwrap_or(64);
+            Ok(SimilarAssetMatch {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                format: row.get::<_, String>(2)?.to_ascii_uppercase(),
+                kind: row.get(3)?,
+                thumbnail_path: row.get(4)?,
+                palette: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
+                distance,
+                similarity: 1.0 - f64::from(distance) / 64.0,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    matches.retain(|candidate| candidate.distance <= max_distance.min(64));
+    matches.sort_by(|left, right| {
+        left.distance
+            .cmp(&right.distance)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    matches.truncate(limit.clamp(1, 100) as usize);
+    Ok(matches)
+}
+
+#[tauri::command]
+async fn find_similar_assets(
+    asset_id: i64,
+    limit: Option<u32>,
+    max_distance: Option<u32>,
+    app: AppHandle,
+) -> Result<Vec<SimilarAssetMatch>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        find_similar_assets_blocking(
+            asset_id,
+            limit.unwrap_or(24),
+            max_distance.unwrap_or(18),
+            app,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn dhash_distance(left: &str, right: &str) -> Option<u32> {
+    let left = u64::from_str_radix(left, 16).ok()?;
+    let right = u64::from_str_radix(right, 16).ok()?;
+    Some((left ^ right).count_ones())
+}
+
+fn generate_image_preview(
+    path: &Path,
+    thumbnail_path: &Path,
+) -> Result<(u32, u32, VisualFeatures), String> {
     catch_unwind(AssertUnwindSafe(|| {
         let image = decode_preview(path)?;
         let dimensions = image.dimensions();
+        let features = visual_features(&image);
         let thumbnail = image.thumbnail(480, 320);
         if thumbnail_path.extension().and_then(|value| value.to_str()) == Some("jpg") {
             let rgb = thumbnail.to_rgb8();
@@ -3914,7 +4176,7 @@ fn generate_image_preview(path: &Path, thumbnail_path: &Path) -> Result<(u32, u3
                 .save_with_format(thumbnail_path, ImageFormat::WebP)
                 .map_err(|error| error.to_string())?;
         }
-        Ok(dimensions)
+        Ok((dimensions.0, dimensions.1, features))
     }))
     .unwrap_or_else(|payload| Err(format!("预览解码异常：{}", panic_message(payload))))
 }
@@ -4087,6 +4349,7 @@ fn enrich_media_file(
         duration_ms: Some(duration),
         thumbnail_path: generated,
         audio,
+        visual_features: None,
     })
 }
 
@@ -4405,7 +4668,7 @@ fn enrich_pending_images(
     let paths = {
         let mut statement = connection
             .prepare(
-                "SELECT path, modified_ms, kind FROM indexed_assets
+                "SELECT path, modified_ms, kind, size_bytes FROM indexed_assets
                  WHERE availability = 'available' AND metadata_status = 'pending'
                    AND (kind IN ('图片', '动图', '视频', '音频') OR extension = 'psd')
                  ORDER BY modified_ms DESC, path ASC",
@@ -4417,6 +4680,7 @@ fn enrich_pending_images(
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?.max(0) as u64,
                 ))
             })
             .map_err(|error| error.to_string())?
@@ -4446,15 +4710,30 @@ fn enrich_pending_images(
     let mut last_progress_update = Instant::now();
     for commit_batch in paths.chunks(PREVIEW_COMMIT_BATCH_SIZE) {
         let mut commit_results = Vec::with_capacity(commit_batch.len());
-        for batch in commit_batch.chunks(PREVIEW_WORKER_COUNT) {
+        let mut batch_offset = 0;
+        while batch_offset < commit_batch.len() {
             if let Some(manager) = task_manager.as_ref() {
                 manager.wait_until_background_allowed();
             }
+            let available_cpus = thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1);
+            let idle_ms = task_manager
+                .as_ref()
+                .map(BackgroundTaskManager::idle_ms)
+                .unwrap_or(u64::MAX);
+            let worker_count = adaptive_preview_worker_count(
+                available_cpus,
+                &commit_batch[batch_offset..],
+                idle_ms,
+            );
+            let batch_end = (batch_offset + worker_count).min(commit_batch.len());
+            let batch = &commit_batch[batch_offset..batch_end];
             let batch_results = thread::scope(|scope| {
                 let handles = batch
                     .iter()
                     .cloned()
-                    .map(|(path, modified_ms, kind)| {
+                    .map(|(path, modified_ms, kind, _size_bytes)| {
                         let thumbnail_dir = thumbnail_dir.clone();
                         let manager = task_manager.clone();
                         scope.spawn(move || {
@@ -4476,7 +4755,7 @@ fn enrich_pending_images(
                                 })
                             } else {
                                 generate_image_preview(Path::new(&path), &thumbnail_path).map(
-                                    |(width, height)| MediaEnrichment {
+                                    |(width, height, visual_features)| MediaEnrichment {
                                         width: Some(width as i64),
                                         height: Some(height as i64),
                                         duration_ms: None,
@@ -4484,6 +4763,7 @@ fn enrich_pending_images(
                                             thumbnail_path.to_string_lossy().into_owned(),
                                         ),
                                         audio: None,
+                                        visual_features: Some(visual_features),
                                     },
                                 )
                             };
@@ -4501,6 +4781,7 @@ fn enrich_pending_images(
                     .collect::<Result<Vec<_>, String>>()
             })?;
             commit_results.extend(batch_results);
+            batch_offset = batch_end;
         }
 
         let transaction = connection
@@ -4514,6 +4795,7 @@ fn enrich_pending_images(
                 .map(|name| name.to_string_lossy().into_owned());
             let item_result = match enrichment {
                 Ok(enrichment) => {
+                    let visual_features = enrichment.visual_features.clone();
                     let (sample_rate, bit_depth, channels, codec, endianness, frame_size) =
                         enrichment
                             .audio
@@ -4528,7 +4810,7 @@ fn enrich_pending_images(
                                 )
                             })
                             .unwrap_or((None, None, None, None, None, None));
-                    transaction
+                    let updated = transaction
                         .execute(
                             "UPDATE indexed_assets SET width = ?1, height = ?2, duration_ms = ?3,
                              thumbnail_path = ?4, audio_sample_rate = ?5, audio_bit_depth = ?6,
@@ -4550,8 +4832,32 @@ fn enrich_pending_images(
                                 modified_ms,
                             ],
                         )
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| error.to_string())?;
+                    if updated > 0 {
+                        if let Some(features) = visual_features {
+                            transaction
+                                .execute(
+                                    "INSERT INTO asset_visual_features
+                                     (asset_uid, modified_ms, dhash, palette_json, feature_version)
+                                     SELECT asset_uid, modified_ms, ?1, ?2, 1
+                                     FROM indexed_assets WHERE path = ?3 AND modified_ms = ?4
+                                     ON CONFLICT(asset_uid) DO UPDATE SET
+                                       modified_ms = excluded.modified_ms,
+                                       dhash = excluded.dhash,
+                                       palette_json = excluded.palette_json,
+                                       feature_version = excluded.feature_version",
+                                    params![
+                                        features.dhash,
+                                        serde_json::to_string(&features.palette)
+                                            .map_err(|error| error.to_string())?,
+                                        path,
+                                        modified_ms,
+                                    ],
+                                )
+                                .map_err(|error| error.to_string())?;
+                        }
+                    }
+                    Ok(())
                 }
                 Err(error) => transaction
                     .execute(
@@ -5165,6 +5471,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_scan_roots,
             list_indexed_assets,
+            find_similar_assets,
             get_asset_facets,
             get_asset_directory_tree,
             get_tag_catalog,
@@ -5314,15 +5621,19 @@ mod tests {
     fn media_responses_are_bounded_for_large_files() {
         let file_size = MAX_MEDIA_RESPONSE_BYTES * 4;
         assert_eq!(
-            bounded_media_response_range(Some((0, file_size - 1)), file_size),
+            bounded_media_response_range(
+                Some((0, file_size - 1)),
+                file_size,
+                MAX_MEDIA_RESPONSE_BYTES,
+            ),
             (0, MAX_MEDIA_RESPONSE_BYTES - 1, StatusCode::PARTIAL_CONTENT)
         );
         assert_eq!(
-            bounded_media_response_range(None, file_size),
+            bounded_media_response_range(None, file_size, MAX_MEDIA_RESPONSE_BYTES),
             (0, MAX_MEDIA_RESPONSE_BYTES - 1, StatusCode::PARTIAL_CONTENT)
         );
         assert_eq!(
-            bounded_media_response_range(None, 1_000),
+            bounded_media_response_range(None, 1_000, MAX_MEDIA_RESPONSE_BYTES),
             (0, 999, StatusCode::OK)
         );
     }
@@ -5350,12 +5661,57 @@ mod tests {
                 "{policy_name}"
             );
             assert!(media.contains("blob:"), "{policy_name}");
+            let connections = policy["connect-src"].as_str().unwrap();
+            assert!(connections.contains("caevir-media:"), "{policy_name}");
+            assert!(
+                connections.contains("http://caevir-media.localhost"),
+                "{policy_name}"
+            );
+            let fonts = policy["font-src"].as_str().unwrap();
+            assert!(fonts.contains("caevir-media:"), "{policy_name}");
+            assert_eq!(policy["worker-src"], "'self' blob:");
         }
         assert_eq!(security["csp"]["script-src"], "'self'");
         assert!(security["devCsp"]["connect-src"]
             .as_str()
             .unwrap()
             .contains("ws://127.0.0.1:1420"));
+    }
+
+    #[test]
+    fn visual_features_are_stable_and_extract_distinct_palette_colors() {
+        let image = DynamicImage::ImageRgba8(ImageBuffer::from_fn(90, 80, |x, _| {
+            if x < 45 {
+                Rgba([230, 30, 35, 255])
+            } else {
+                Rgba([25, 75, 220, 255])
+            }
+        }));
+        let first = visual_features(&image);
+        let second = visual_features(&image);
+        assert_eq!(first.dhash, second.dhash);
+        assert_eq!(dhash_distance(&first.dhash, &second.dhash), Some(0));
+        assert_eq!(first.palette.len(), 3);
+        assert!(first.palette.iter().any(|color| color.starts_with("#e")));
+        assert!(first.palette.iter().any(|color| color.ends_with("dc")));
+    }
+
+    #[test]
+    fn adaptive_preview_workers_respect_cpu_load_file_weight_and_interaction() {
+        let light = vec![
+            ("a.png".to_string(), 1, "图片".to_string(), 1_024),
+            ("b.jpg".to_string(), 1, "图片".to_string(), 2_048),
+            ("c.webp".to_string(), 1, "图片".to_string(), 4_096),
+        ];
+        assert_eq!(adaptive_preview_worker_count(8, &light, 5_000), 3);
+        assert_eq!(adaptive_preview_worker_count(8, &light, 900), 1);
+        let heavy = vec![(
+            "large.psd".to_string(),
+            1,
+            "设计文件".to_string(),
+            120 * 1024 * 1024,
+        )];
+        assert_eq!(adaptive_preview_worker_count(16, &heavy, 5_000), 1);
     }
 
     #[test]
@@ -5884,6 +6240,35 @@ mod tests {
             .unwrap();
         assert_eq!((width, height), (32, 18));
         assert!(Path::new(&thumbnail_path).is_file());
+        let (hash, palette_json): (String, String) = connection
+            .query_row(
+                "SELECT visual.dhash, visual.palette_json
+                 FROM indexed_assets asset
+                 JOIN asset_visual_features visual ON visual.asset_uid = asset.asset_uid
+                 WHERE asset.path = ?1 AND visual.modified_ms = asset.modified_ms",
+                params![image_path.to_string_lossy().into_owned()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hash.len(), 16);
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&palette_json)
+                .unwrap()
+                .len(),
+            3
+        );
+        connection
+            .execute(
+                "UPDATE indexed_assets SET modified_ms = modified_ms + 1 WHERE path = ?1",
+                params![image_path.to_string_lossy().into_owned()],
+            )
+            .unwrap();
+        let remaining_features: i64 = connection
+            .query_row("SELECT COUNT(*) FROM asset_visual_features", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining_features, 0);
         drop(connection);
         fs::remove_dir_all(workspace).unwrap();
     }
@@ -5900,10 +6285,10 @@ mod tests {
 
         let decoded = decode_preview(&image_path).unwrap();
         assert_eq!(decoded.dimensions(), (29, 17));
-        assert_eq!(
-            generate_image_preview(&image_path, &thumbnail_path).unwrap(),
-            (29, 17)
-        );
+        let (width, height, features) =
+            generate_image_preview(&image_path, &thumbnail_path).unwrap();
+        assert_eq!((width, height), (29, 17));
+        assert_eq!(features.palette.len(), 3);
         assert!(thumbnail_path.is_file());
         fs::remove_dir_all(workspace).unwrap();
     }
