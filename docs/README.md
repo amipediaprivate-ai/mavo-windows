@@ -9,3 +9,4 @@
 - [`double-background-removal-design.md`](double-background-removal-design.md)：图片明细“移除图片背景”的纯色背景识别、配对图生成与黑白双背景差分方案。
 - [`png-compression-design.md`](png-compression-design.md)：PNG 压缩功能的需求与技术设计。
 - [`audio-processing-design.md`](audio-processing-design.md)：音频 FSB 转 WAV、格式转换与压缩的需求、交互、技术方案和验收标准。
+- [`database-backup-and-recovery.md`](database-backup-and-recovery.md)：本地索引数据库的自动备份、迁移验证、损坏恢复与人工处理边界。

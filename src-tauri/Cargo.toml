@@ -21,7 +21,7 @@ notify = "8.2"
 oxipng = { version = "10.1.1", default-features = false, features = ["parallel"] }
 png = "0.18.1"
 psd = "0.3.5"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["protocol-asset"] }

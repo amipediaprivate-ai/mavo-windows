@@ -39,6 +39,7 @@ use tauri::{
 
 mod audio_processing;
 mod background_removal;
+mod database_lifecycle;
 mod double_background_removal;
 mod png_compression;
 mod projects;
@@ -666,8 +667,7 @@ fn open_database(path: &Path) -> Result<Connection, String> {
     Ok(connection)
 }
 
-fn initialize_database(path: &Path) -> Result<Connection, String> {
-    let connection = open_database(path)?;
+fn initialize_database_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -752,7 +752,66 @@ fn initialize_database(path: &Path) -> Result<Connection, String> {
     connection
         .execute_batch("PRAGMA optimize=0x10002;")
         .map_err(|error| error.to_string())?;
-    Ok(connection)
+    Ok(())
+}
+
+fn validate_database_schema(connection: &Connection) -> Result<(), String> {
+    const REQUIRED_TABLES: &[&str] = &[
+        "scan_runs",
+        "indexed_assets",
+        "scan_roots",
+        "smart_views",
+        "app_metadata",
+        "tag_groups",
+        "tags",
+        "tag_kind_scopes",
+        "asset_tags",
+        "indexed_assets_fts",
+        "projects",
+        "project_assets",
+        "project_file_operations",
+    ];
+    for table in REQUIRED_TABLES {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("无法验证数据库结构：{error}"))?;
+        if !exists {
+            return Err(format!("数据库结构缺少必需表：{table}"));
+        }
+    }
+
+    const REQUIRED_ASSET_COLUMNS: &[&str] = &[
+        "path",
+        "asset_uid",
+        "kind",
+        "thumbnail_path",
+        "metadata_status",
+        "availability",
+        "directory_key",
+        "asset_scope",
+    ];
+    let mut statement = connection
+        .prepare("PRAGMA table_info(indexed_assets)")
+        .map_err(|error| format!("无法验证资源索引结构：{error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("无法读取资源索引结构：{error}"))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| format!("无法读取资源索引结构：{error}"))?;
+    for column in REQUIRED_ASSET_COLUMNS {
+        if !columns.contains(*column) {
+            return Err(format!("资源索引结构缺少必需字段：indexed_assets.{column}"));
+        }
+    }
+    Ok(())
+}
+
+fn initialize_database(path: &Path) -> Result<Connection, String> {
+    database_lifecycle::prepare_database(path, initialize_database_schema, validate_database_schema)
 }
 
 fn setup_default_tags(connection: &Connection) -> Result<(), String> {
@@ -1152,7 +1211,9 @@ pub(crate) fn setup_database(path: &Path) -> Result<Connection, String> {
 
 #[cfg(test)]
 pub(crate) fn setup_database(path: &Path) -> Result<Connection, String> {
-    initialize_database(path)
+    let connection = open_database(path)?;
+    initialize_database_schema(&connection)?;
+    Ok(connection)
 }
 
 fn setup_fts(connection: &Connection) -> Result<(), String> {
@@ -5216,13 +5277,12 @@ mod tests {
             Some("duplicates"),
         ] {
             assert!(
-                asset_order_sql(sort)
-                    .starts_with("CASE WHEN metadata_status = 'unsupported' THEN 1 ELSE 0 END ASC"),
+                asset_order_sql(sort).starts_with("(metadata_status = 'unsupported') ASC"),
                 "failed metadata must sort last for {sort:?}"
             );
         }
         assert!(asset_order_sql(Some("duration"))
-            .contains("CASE WHEN duration_ms IS NULL THEN 1 ELSE 0 END ASC, duration_ms DESC"));
+            .contains("(duration_ms IS NULL) ASC, duration_ms DESC"));
     }
 
     #[test]
@@ -5265,6 +5325,37 @@ mod tests {
             bounded_media_response_range(None, 1_000),
             (0, 999, StatusCode::OK)
         );
+    }
+
+    #[test]
+    fn desktop_csp_covers_local_previews_and_media_without_eval_or_wildcards() {
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let config: serde_json::Value =
+            serde_json::from_slice(&fs::read(config_path).unwrap()).unwrap();
+        let security = &config["app"]["security"];
+        for policy_name in ["csp", "devCsp"] {
+            let policy = &security[policy_name];
+            let serialized = serde_json::to_string(policy).unwrap();
+            assert!(!serialized.contains("unsafe-eval"), "{policy_name}");
+            assert!(!serialized.contains("\"*\""), "{policy_name}");
+            let images = policy["img-src"].as_str().unwrap();
+            assert!(images.contains("asset:"), "{policy_name}");
+            assert!(images.contains("http://asset.localhost"), "{policy_name}");
+            assert!(images.contains("blob:"), "{policy_name}");
+            assert!(images.contains("data:"), "{policy_name}");
+            let media = policy["media-src"].as_str().unwrap();
+            assert!(media.contains("caevir-media:"), "{policy_name}");
+            assert!(
+                media.contains("http://caevir-media.localhost"),
+                "{policy_name}"
+            );
+            assert!(media.contains("blob:"), "{policy_name}");
+        }
+        assert_eq!(security["csp"]["script-src"], "'self'");
+        assert!(security["devCsp"]["connect-src"]
+            .as_str()
+            .unwrap()
+            .contains("ws://127.0.0.1:1420"));
     }
 
     #[test]
@@ -5794,6 +5885,26 @@ mod tests {
         assert_eq!((width, height), (32, 18));
         assert!(Path::new(&thumbnail_path).is_file());
         drop(connection);
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn tiff_preview_decodes_and_transcodes_to_thumbnail() {
+        let workspace = test_workspace("tiff-thumbnail");
+        fs::create_dir_all(&workspace).unwrap();
+        let image_path = workspace.join("preview.tiff");
+        let thumbnail_path = workspace.join("preview.webp");
+        image::RgbImage::from_pixel(29, 17, image::Rgb([30, 120, 210]))
+            .save_with_format(&image_path, ImageFormat::Tiff)
+            .unwrap();
+
+        let decoded = decode_preview(&image_path).unwrap();
+        assert_eq!(decoded.dimensions(), (29, 17));
+        assert_eq!(
+            generate_image_preview(&image_path, &thumbnail_path).unwrap(),
+            (29, 17)
+        );
+        assert!(thumbnail_path.is_file());
         fs::remove_dir_all(workspace).unwrap();
     }
 

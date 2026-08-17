@@ -120,12 +120,18 @@ export function VideoCardPlayer({ asset }: { asset: Asset }) {
         playsInline
         onClick={toggle}
         onLoadStart={() => setState((current) => ({ ...current, loading: true }))}
-        onLoadedMetadata={(event) => setState((current) => ({
-          ...current,
-          duration: Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : current.duration,
-          loading: false,
-        }))}
-        onTimeUpdate={(event) => setState((current) => ({ ...current, currentTime: event.currentTarget.currentTime }))}
+        onLoadedMetadata={(event) => {
+          const duration = event.currentTarget.duration;
+          setState((current) => ({
+            ...current,
+            duration: Number.isFinite(duration) ? duration : current.duration,
+            loading: false,
+          }));
+        }}
+        onTimeUpdate={(event) => {
+          const currentTime = event.currentTarget.currentTime;
+          setState((current) => ({ ...current, currentTime }));
+        }}
         onPlaying={() => {
           announcePlayback();
           setState((current) => ({ ...current, playing: true, loading: false, error: "" }));
@@ -133,12 +139,15 @@ export function VideoCardPlayer({ asset }: { asset: Asset }) {
         onWaiting={() => setState((current) => ({ ...current, loading: true }))}
         onPause={() => setState((current) => ({ ...current, playing: false, loading: false }))}
         onEnded={() => setState((current) => ({ ...current, playing: false, currentTime: current.duration }))}
-        onError={(event) => setState((current) => ({
-          ...current,
-          playing: false,
-          loading: false,
-          error: videoErrorMessage(event.currentTarget),
-        }))}
+        onError={(event) => {
+          const error = videoErrorMessage(event.currentTarget);
+          setState((current) => ({
+            ...current,
+            playing: false,
+            loading: false,
+            error,
+          }));
+        }}
       />
       <button className="video-card-main-play" type="button" onClick={toggle} aria-label={state.playing ? "暂停视频" : "播放视频"}>
         {state.loading ? <LoaderCircle className="video-spinner" size={17} /> : state.playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}
@@ -221,12 +230,18 @@ export function VideoDetailPlayer({ asset }: { asset: Asset }) {
           muted={muted}
           onClick={toggle}
           onLoadStart={() => setState((current) => ({ ...current, loading: true }))}
-          onLoadedMetadata={(event) => setState((current) => ({
-            ...current,
-            duration: Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : current.duration,
-            loading: false,
-          }))}
-          onTimeUpdate={(event) => setState((current) => ({ ...current, currentTime: event.currentTarget.currentTime }))}
+          onLoadedMetadata={(event) => {
+            const duration = event.currentTarget.duration;
+            setState((current) => ({
+              ...current,
+              duration: Number.isFinite(duration) ? duration : current.duration,
+              loading: false,
+            }));
+          }}
+          onTimeUpdate={(event) => {
+            const currentTime = event.currentTarget.currentTime;
+            setState((current) => ({ ...current, currentTime }));
+          }}
           onPlaying={() => {
             announcePlayback();
             setState((current) => ({ ...current, playing: true, loading: false, error: "" }));
@@ -234,7 +249,10 @@ export function VideoDetailPlayer({ asset }: { asset: Asset }) {
           onWaiting={() => setState((current) => ({ ...current, loading: true }))}
           onPause={() => setState((current) => ({ ...current, playing: false, loading: false }))}
           onEnded={() => setState((current) => ({ ...current, playing: false, currentTime: current.duration }))}
-          onError={(event) => setState((current) => ({ ...current, playing: false, loading: false, error: videoErrorMessage(event.currentTarget) }))}
+          onError={(event) => {
+            const error = videoErrorMessage(event.currentTarget);
+            setState((current) => ({ ...current, playing: false, loading: false, error }));
+          }}
         />
         {!state.playing && (
           <button className="video-detail-overlay-play" type="button" onClick={toggle} aria-label="播放视频">
