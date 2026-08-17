@@ -425,6 +425,10 @@ struct IndexedAssetSummary {
     original_source_url: String,
     author: String,
     author_status: String,
+    chinese_name: String,
+    pinyin: String,
+    ai_prompt_english: String,
+    ai_prompt_chinese: String,
     tags: Vec<AssetTagSummary>,
 }
 
@@ -434,6 +438,10 @@ struct AssetMetadataInput {
     original_source_method: String,
     original_source_url: String,
     author: String,
+    chinese_name: String,
+    pinyin: String,
+    ai_prompt_english: String,
+    ai_prompt_chinese: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -443,6 +451,10 @@ struct AssetMetadata {
     original_source_url: String,
     author: String,
     author_status: String,
+    chinese_name: String,
+    pinyin: String,
+    ai_prompt_english: String,
+    ai_prompt_chinese: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -891,6 +903,10 @@ fn migrate_indexed_assets(connection: &Connection) -> Result<(), String> {
         ("original_source_url", "TEXT NOT NULL DEFAULT ''"),
         ("author", "TEXT NOT NULL DEFAULT ''"),
         ("author_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("chinese_name", "TEXT NOT NULL DEFAULT ''"),
+        ("pinyin", "TEXT NOT NULL DEFAULT ''"),
+        ("ai_prompt_english", "TEXT NOT NULL DEFAULT ''"),
+        ("ai_prompt_chinese", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (name, definition) in additions {
         if !columns.iter().any(|column| column == name) {
@@ -1140,39 +1156,82 @@ pub(crate) fn setup_database(path: &Path) -> Result<Connection, String> {
 }
 
 fn setup_fts(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute_batch(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS indexed_assets_fts USING fts5(
-               name, path, content='indexed_assets', content_rowid='rowid', tokenize='trigram'
-             );
-             CREATE TRIGGER IF NOT EXISTS indexed_assets_fts_insert AFTER INSERT ON indexed_assets BEGIN
-               INSERT INTO indexed_assets_fts(rowid, name, path) VALUES (new.rowid, new.name, new.path);
-             END;
-             CREATE TRIGGER IF NOT EXISTS indexed_assets_fts_delete AFTER DELETE ON indexed_assets BEGIN
-               INSERT INTO indexed_assets_fts(indexed_assets_fts, rowid, name, path)
-               VALUES ('delete', old.rowid, old.name, old.path);
-             END;
-             CREATE TRIGGER IF NOT EXISTS indexed_assets_fts_update AFTER UPDATE OF name, path ON indexed_assets BEGIN
-               INSERT INTO indexed_assets_fts(indexed_assets_fts, rowid, name, path)
-               VALUES ('delete', old.rowid, old.name, old.path);
-               INSERT INTO indexed_assets_fts(rowid, name, path) VALUES (new.rowid, new.name, new.path);
-             END;",
-        )
-        .map_err(|error| error.to_string())?;
-    let initialized: bool = connection
+    let table_exists: bool = connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'fts_initialized_v1')",
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'indexed_assets_fts'
+             )",
             [],
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
-    if !initialized {
+    let schema_current: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_metadata WHERE key = 'fts_initialized_v2')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !table_exists || !schema_current {
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS indexed_assets_fts_insert;
+                 DROP TRIGGER IF EXISTS indexed_assets_fts_delete;
+                 DROP TRIGGER IF EXISTS indexed_assets_fts_update;
+                 DROP TABLE IF EXISTS indexed_assets_fts;",
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS indexed_assets_fts USING fts5(
+               name, path, chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese,
+               content='indexed_assets', content_rowid='rowid', tokenize='trigram'
+             );
+             CREATE TRIGGER IF NOT EXISTS indexed_assets_fts_insert AFTER INSERT ON indexed_assets BEGIN
+               INSERT INTO indexed_assets_fts(
+                 rowid, name, path, chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese
+               ) VALUES (
+                 new.rowid, new.name, new.path, new.chinese_name, new.pinyin,
+                 new.ai_prompt_english, new.ai_prompt_chinese
+               );
+             END;
+             CREATE TRIGGER IF NOT EXISTS indexed_assets_fts_delete AFTER DELETE ON indexed_assets BEGIN
+               INSERT INTO indexed_assets_fts(
+                 indexed_assets_fts, rowid, name, path, chinese_name, pinyin,
+                 ai_prompt_english, ai_prompt_chinese
+               ) VALUES (
+                 'delete', old.rowid, old.name, old.path, old.chinese_name, old.pinyin,
+                 old.ai_prompt_english, old.ai_prompt_chinese
+               );
+             END;
+             CREATE TRIGGER IF NOT EXISTS indexed_assets_fts_update
+             AFTER UPDATE OF name, path, chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese
+             ON indexed_assets BEGIN
+               INSERT INTO indexed_assets_fts(
+                 indexed_assets_fts, rowid, name, path, chinese_name, pinyin,
+                 ai_prompt_english, ai_prompt_chinese
+               ) VALUES (
+                 'delete', old.rowid, old.name, old.path, old.chinese_name, old.pinyin,
+                 old.ai_prompt_english, old.ai_prompt_chinese
+               );
+               INSERT INTO indexed_assets_fts(
+                 rowid, name, path, chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese
+               ) VALUES (
+                 new.rowid, new.name, new.path, new.chinese_name, new.pinyin,
+                 new.ai_prompt_english, new.ai_prompt_chinese
+               );
+             END;",
+        )
+        .map_err(|error| error.to_string())?;
+    if !table_exists || !schema_current {
         connection
             .execute_batch("INSERT INTO indexed_assets_fts(indexed_assets_fts) VALUES('rebuild');")
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "INSERT INTO app_metadata (key, value) VALUES ('fts_initialized_v1', '1')",
+                "INSERT INTO app_metadata (key, value) VALUES ('fts_initialized_v2', '1')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 [],
             )
             .map_err(|error| error.to_string())?;
@@ -1322,13 +1381,18 @@ fn build_asset_where(query: &AssetQuery) -> (String, Vec<Value>) {
             values.push(Value::Text(format!("%{search}%")));
         } else {
             where_parts.push(
-                "(name LIKE ? OR path LIKE ? OR EXISTS (
+                "(name LIKE ? OR path LIKE ? OR chinese_name LIKE ? OR pinyin LIKE ?
+                 OR ai_prompt_english LIKE ? OR ai_prompt_chinese LIKE ? OR EXISTS (
                    SELECT 1 FROM asset_tags search_at JOIN tags search_tag ON search_tag.id = search_at.tag_id
                    WHERE search_at.asset_uid = indexed_assets.asset_uid AND search_tag.name LIKE ?
                  ))"
                 .to_string(),
             );
             let pattern = format!("%{search}%");
+            values.push(Value::Text(pattern.clone()));
+            values.push(Value::Text(pattern.clone()));
+            values.push(Value::Text(pattern.clone()));
+            values.push(Value::Text(pattern.clone()));
             values.push(Value::Text(pattern.clone()));
             values.push(Value::Text(pattern.clone()));
             values.push(Value::Text(pattern));
@@ -1449,7 +1513,8 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
                 width, height, duration_ms, audio_sample_rate, audio_bit_depth, audio_channels,
                 audio_codec, audio_endianness, audio_frame_size, thumbnail_path, metadata_status,
                 integrated_lufs, true_peak_dbtp, loudness_range_lu, loudness_status, availability,
-                original_source_method, original_source_url, author, author_status
+                original_source_method, original_source_url, author, author_status,
+                chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese
          FROM indexed_assets WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
     );
     let mut page_values = values;
@@ -1496,6 +1561,10 @@ fn list_indexed_assets_blocking(query: AssetQuery, app: AppHandle) -> Result<Ass
                 original_source_url: row.get(26)?,
                 author: row.get(27)?,
                 author_status: row.get(28)?,
+                chinese_name: row.get(29)?,
+                pinyin: row.get(30)?,
+                ai_prompt_english: row.get(31)?,
+                ai_prompt_chinese: row.get(32)?,
                 tags: Vec::new(),
             })
         })
@@ -2991,7 +3060,8 @@ fn rename_asset(
 fn asset_metadata(connection: &Connection, asset_id: i64) -> Result<AssetMetadata, String> {
     connection
         .query_row(
-            "SELECT original_source_method, original_source_url, author, author_status
+            "SELECT original_source_method, original_source_url, author, author_status,
+                    chinese_name, pinyin, ai_prompt_english, ai_prompt_chinese
              FROM indexed_assets WHERE rowid = ?1 AND asset_scope = 'library'",
             params![asset_id],
             |row| {
@@ -3000,6 +3070,10 @@ fn asset_metadata(connection: &Connection, asset_id: i64) -> Result<AssetMetadat
                     original_source_url: row.get(1)?,
                     author: row.get(2)?,
                     author_status: row.get(3)?,
+                    chinese_name: row.get(4)?,
+                    pinyin: row.get(5)?,
+                    ai_prompt_english: row.get(6)?,
+                    ai_prompt_chinese: row.get(7)?,
                 })
             },
         )
@@ -3010,6 +3084,10 @@ fn validated_asset_metadata(input: AssetMetadataInput) -> Result<AssetMetadataIn
     let original_source_method = input.original_source_method.trim().to_string();
     let original_source_url = input.original_source_url.trim().to_string();
     let author = input.author.trim().to_string();
+    let chinese_name = input.chinese_name.trim().to_string();
+    let pinyin = input.pinyin.trim().to_string();
+    let ai_prompt_english = input.ai_prompt_english.trim().to_string();
+    let ai_prompt_chinese = input.ai_prompt_chinese.trim().to_string();
     if original_source_method.is_empty() {
         return Err("请填写原始来源方式".to_string());
     }
@@ -3029,10 +3107,26 @@ fn validated_asset_metadata(input: AssetMetadataInput) -> Result<AssetMetadataIn
     if author.chars().count() > 200 {
         return Err("作者不能超过 200 个字符".to_string());
     }
+    if chinese_name.chars().count() > 200 {
+        return Err("中文名不能超过 200 个字符".to_string());
+    }
+    if pinyin.chars().count() > 500 {
+        return Err("拼音不能超过 500 个字符".to_string());
+    }
+    if ai_prompt_english.chars().count() > 20_000 {
+        return Err("AI 提示词（英文）不能超过 20000 个字符".to_string());
+    }
+    if ai_prompt_chinese.chars().count() > 20_000 {
+        return Err("AI 提示词（中文）不能超过 20000 个字符".to_string());
+    }
     Ok(AssetMetadataInput {
         original_source_method,
         original_source_url,
         author,
+        chinese_name,
+        pinyin,
+        ai_prompt_english,
+        ai_prompt_chinese,
     })
 }
 
@@ -3052,12 +3146,17 @@ fn update_asset_metadata(
         .execute(
             "UPDATE indexed_assets
              SET original_source_method = ?1, original_source_url = ?2,
-                 author = ?3, author_status = 'ready'
-             WHERE rowid = ?4 AND asset_scope = 'library'",
+                 author = ?3, author_status = 'ready', chinese_name = ?4,
+                 pinyin = ?5, ai_prompt_english = ?6, ai_prompt_chinese = ?7
+             WHERE rowid = ?8 AND asset_scope = 'library'",
             params![
                 input.original_source_method,
                 input.original_source_url,
                 input.author,
+                input.chinese_name,
+                input.pinyin,
+                input.ai_prompt_english,
+                input.ai_prompt_chinese,
                 asset_id
             ],
         )
@@ -5393,6 +5492,10 @@ mod tests {
             original_source_method: "  官方网站  ".to_string(),
             original_source_url: "  https://example.com/assets/42  ".to_string(),
             author: "  Caevir Studio  ".to_string(),
+            chinese_name: "  森林场景  ".to_string(),
+            pinyin: "  sen lin chang jing  ".to_string(),
+            ai_prompt_english: "  a forest scene  ".to_string(),
+            ai_prompt_chinese: "  森林场景  ".to_string(),
         })
         .unwrap();
         assert_eq!(validated.original_source_method, "官方网站");
@@ -5401,6 +5504,10 @@ mod tests {
             "https://example.com/assets/42"
         );
         assert_eq!(validated.author, "Caevir Studio");
+        assert_eq!(validated.chinese_name, "森林场景");
+        assert_eq!(validated.pinyin, "sen lin chang jing");
+        assert_eq!(validated.ai_prompt_english, "a forest scene");
+        assert_eq!(validated.ai_prompt_chinese, "森林场景");
 
         for url in [
             "example.com/file",
@@ -5411,6 +5518,10 @@ mod tests {
                 original_source_method: "供应商".to_string(),
                 original_source_url: url.to_string(),
                 author: String::new(),
+                chinese_name: String::new(),
+                pinyin: String::new(),
+                ai_prompt_english: String::new(),
+                ai_prompt_chinese: String::new(),
             })
             .is_err());
         }
@@ -5797,6 +5908,83 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+        drop(connection);
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn asset_search_finds_extended_metadata() {
+        let workspace = test_workspace("extended-metadata-search");
+        let source = workspace.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("asset.png"), b"placeholder").unwrap();
+        let database = workspace.join("index.sqlite3");
+        let event_channel = Channel::<ScanEvent>::new(|_body: InvokeResponseBody| Ok(()));
+        run_scan(
+            ScanRequest {
+                scope: ScanScope::Folder,
+                paths: vec![source.to_string_lossy().into_owned()],
+                speed: ScanSpeed::Fast,
+            },
+            create_scan_id(),
+            database.clone(),
+            Arc::new(AtomicBool::new(false)),
+            event_channel,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let connection = setup_database(&database).unwrap();
+        connection
+            .execute(
+                "UPDATE indexed_assets
+                 SET chinese_name = ?1, pinyin = ?2,
+                     ai_prompt_english = ?3, ai_prompt_chinese = ?4",
+                params![
+                    "森林场景",
+                    "sen lin chang jing",
+                    "cinematic forest lighting",
+                    "柔和光线下的森林"
+                ],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS indexed_assets_fts_insert;
+                 DROP TRIGGER IF EXISTS indexed_assets_fts_delete;
+                 DROP TRIGGER IF EXISTS indexed_assets_fts_update;
+                 DROP TABLE indexed_assets_fts;
+                 DELETE FROM app_metadata WHERE key = 'fts_initialized_v2';
+                 CREATE VIRTUAL TABLE indexed_assets_fts USING fts5(
+                   name, path, content='indexed_assets', content_rowid='rowid', tokenize='trigram'
+                 );
+                 INSERT INTO indexed_assets_fts(indexed_assets_fts) VALUES('rebuild');",
+            )
+            .unwrap();
+        setup_fts(&connection).unwrap();
+        connection
+            .execute(
+                "UPDATE indexed_assets SET ai_prompt_english = ?1",
+                params!["updated cinematic forest lighting"],
+            )
+            .unwrap();
+
+        for search in ["森林场", "sen lin", "updated cinematic", "柔和光线", "森林"] {
+            let query = AssetQuery {
+                query: Some(search.to_string()),
+                ..Default::default()
+            };
+            let (where_sql, values) = build_asset_where(&query);
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM indexed_assets WHERE {where_sql}"),
+                    params_from_iter(values.iter()),
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "extended metadata search failed for {search}");
+        }
         drop(connection);
         fs::remove_dir_all(workspace).unwrap();
     }

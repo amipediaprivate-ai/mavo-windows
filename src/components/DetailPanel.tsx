@@ -16,6 +16,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
+import { pinyin as convertToPinyin } from "pinyin-pro";
 import {
   extractIndexedAssetAuthor,
   type AssetMetadata,
@@ -72,6 +73,11 @@ interface DetailPanelProps {
   onProjectsChanged: () => void;
 }
 
+function generatedPinyin(value: string) {
+  const normalized = value.trim();
+  return normalized ? convertToPinyin(normalized, { toneType: "none" }) : "";
+}
+
 function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
   asset: Asset;
   onAction: (message: string) => void;
@@ -83,6 +89,13 @@ function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
   const [sourceMethod, setSourceMethod] = useState(asset.originalSourceMethod || asset.source);
   const [sourceUrl, setSourceUrl] = useState(asset.originalSourceUrl || "");
   const [author, setAuthor] = useState(asset.author || "");
+  const [chineseName, setChineseName] = useState(asset.chineseName || "");
+  const [pinyin, setPinyin] = useState(asset.pinyin || "");
+  const [pinyinManuallyEdited, setPinyinManuallyEdited] = useState(
+    Boolean(asset.pinyin && asset.pinyin !== generatedPinyin(asset.chineseName || "")),
+  );
+  const [aiPromptEnglish, setAiPromptEnglish] = useState(asset.aiPromptEnglish || "");
+  const [aiPromptChinese, setAiPromptChinese] = useState(asset.aiPromptChinese || "");
   const [error, setError] = useState("");
 
   const unavailableAudioValue = asset.metadataStatus === "pending"
@@ -116,7 +129,12 @@ function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
     setSourceMethod(asset.originalSourceMethod || asset.source);
     setSourceUrl(asset.originalSourceUrl || "");
     setAuthor(asset.author || "");
-  }, [asset.author, asset.id, asset.originalSourceMethod, asset.originalSourceUrl, asset.source, editing]);
+    setChineseName(asset.chineseName || "");
+    setPinyin(asset.pinyin || "");
+    setPinyinManuallyEdited(Boolean(asset.pinyin && asset.pinyin !== generatedPinyin(asset.chineseName || "")));
+    setAiPromptEnglish(asset.aiPromptEnglish || "");
+    setAiPromptChinese(asset.aiPromptChinese || "");
+  }, [asset.aiPromptChinese, asset.aiPromptEnglish, asset.author, asset.chineseName, asset.id, asset.originalSourceMethod, asset.originalSourceUrl, asset.pinyin, asset.source, editing]);
 
   useEffect(() => {
     if (!asset.id.startsWith("indexed-") || asset.authorStatus !== "pending") return;
@@ -135,6 +153,16 @@ function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
     setSourceMethod(asset.originalSourceMethod || asset.source);
     setSourceUrl(asset.originalSourceUrl || "");
     setAuthor(asset.author || "");
+    setChineseName(asset.chineseName || "");
+    setPinyin(asset.pinyin || "");
+    setPinyinManuallyEdited(Boolean(asset.pinyin && asset.pinyin !== generatedPinyin(asset.chineseName || "")));
+    setAiPromptEnglish(asset.aiPromptEnglish || "");
+    setAiPromptChinese(asset.aiPromptChinese || "");
+  };
+
+  const updateChineseName = (value: string) => {
+    setChineseName(value);
+    if (!pinyinManuallyEdited) setPinyin(generatedPinyin(value));
   };
 
   const submit = async (event: FormEvent) => {
@@ -161,6 +189,10 @@ function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
         originalSourceMethod: method,
         originalSourceUrl: url,
         author: author.trim(),
+        chineseName: chineseName.trim(),
+        pinyin: pinyin.trim(),
+        aiPromptEnglish: aiPromptEnglish.trim(),
+        aiPromptChinese: aiPromptChinese.trim(),
       });
       onResolved(asset, metadata);
       setEditing(false);
@@ -201,6 +233,21 @@ function MetadataFields({ asset, onAction, onUpdate, onResolved }: {
         <summary><span><UserRound size={14} /> 更多信息</span><ChevronRight size={14} /></summary>
         <div className="asset-more-info-content">
           {editing ? <label><span>作者</span><input value={author} maxLength={200} disabled={saving} onChange={(event) => setAuthor(event.target.value)} placeholder="未获取到时可手动填写" /></label> : <DetailRow label="作者" value={asset.author || "未填写"} />}
+          {editing ? (
+            <>
+              <label><span>中文名</span><input value={chineseName} maxLength={200} disabled={saving} onChange={(event) => updateChineseName(event.target.value)} placeholder="填写中文名称后自动生成拼音" /></label>
+              <label><span>拼音</span><input value={pinyin} maxLength={500} disabled={saving} onChange={(event) => { setPinyin(event.target.value); setPinyinManuallyEdited(true); }} placeholder="由中文名自动生成，也可手动修改" /></label>
+              <label><span>AI提示词-英文</span><textarea rows={5} value={aiPromptEnglish} maxLength={20000} disabled={saving} onChange={(event) => setAiPromptEnglish(event.target.value)} placeholder="输入英文 AI 提示词" /></label>
+              <label><span>AI提示词-中文</span><textarea rows={5} value={aiPromptChinese} maxLength={20000} disabled={saving} onChange={(event) => setAiPromptChinese(event.target.value)} placeholder="输入中文 AI 提示词" /></label>
+            </>
+          ) : (
+            <>
+              <DetailRow label="中文名" value={asset.chineseName || "未填写"} />
+              <DetailRow label="拼音" value={asset.pinyin || "未填写"} />
+              <LongDetailRow label="AI提示词-英文" value={asset.aiPromptEnglish || "未填写"} />
+              <LongDetailRow label="AI提示词-中文" value={asset.aiPromptChinese || "未填写"} />
+            </>
+          )}
           {!editing && asset.authorStatus === "pending" && <small>正在尝试从文件元数据获取作者…</small>}
           {asset.kind === "音频" && (
             <>
@@ -230,6 +277,15 @@ function DetailRow({ label, value }: { label: string; value: string }) {
     <div className="detail-row">
       <span>{label}</span>
       <strong title={value}>{value}</strong>
+    </div>
+  );
+}
+
+function LongDetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="detail-long-row">
+      <span>{label}</span>
+      <p className={value === "未填写" ? "empty-detail-value" : undefined}>{value}</p>
     </div>
   );
 }

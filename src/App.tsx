@@ -821,6 +821,10 @@ export default function App() {
       originalSourceUrl: metadata.originalSourceUrl,
       author: metadata.author,
       authorStatus: metadata.authorStatus,
+      chineseName: metadata.chineseName,
+      pinyin: metadata.pinyin,
+      aiPromptEnglish: metadata.aiPromptEnglish,
+      aiPromptChinese: metadata.aiPromptChinese,
     };
     setLibraryAssets((current) => current.map((item) => item.id === asset.id ? { ...item, ...patch } : item));
     const cached = selectedAssetCache.current.get(asset.id);

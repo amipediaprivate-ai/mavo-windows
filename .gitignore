@@ -10,3 +10,4 @@ src-tauri/resources/ffmpeg/
 src-tauri/resources/vgmstream/
 src-tauri/resources/rembg-runtime/
 .tmp-python-embed.zip
+.tmp-mavo-ffmpeg-install/

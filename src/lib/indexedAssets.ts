@@ -33,6 +33,10 @@ export interface IndexedAssetRecord {
   originalSourceUrl: string;
   author: string;
   authorStatus: "pending" | "ready";
+  chineseName: string;
+  pinyin: string;
+  aiPromptEnglish: string;
+  aiPromptChinese: string;
   tags: AssetTag[];
 }
 
@@ -41,12 +45,20 @@ export interface AssetMetadata {
   originalSourceUrl: string;
   author: string;
   authorStatus: "pending" | "ready";
+  chineseName: string;
+  pinyin: string;
+  aiPromptEnglish: string;
+  aiPromptChinese: string;
 }
 
 export interface AssetMetadataInput {
   originalSourceMethod: string;
   originalSourceUrl: string;
   author: string;
+  chineseName: string;
+  pinyin: string;
+  aiPromptEnglish: string;
+  aiPromptChinese: string;
 }
 
 export interface IndexedAssetPage {
@@ -238,6 +250,10 @@ export function toAsset(record: IndexedAssetRecord): Asset {
     originalSourceUrl: record.originalSourceUrl,
     author: record.author,
     authorStatus: record.authorStatus,
+    chineseName: record.chineseName,
+    pinyin: record.pinyin,
+    aiPromptEnglish: record.aiPromptEnglish,
+    aiPromptChinese: record.aiPromptChinese,
     importedAt: formatDate(record.indexedAtMs),
     modifiedAt: formatDate(record.modifiedMs),
     palette: ["#26324a", "#42658a", "#182033"],

@@ -28,6 +28,10 @@ export interface Asset {
   originalSourceUrl?: string;
   author?: string;
   authorStatus?: "pending" | "ready";
+  chineseName?: string;
+  pinyin?: string;
+  aiPromptEnglish?: string;
+  aiPromptChinese?: string;
   importedAt: string;
   modifiedAt: string;
   palette: [string, string, string];
