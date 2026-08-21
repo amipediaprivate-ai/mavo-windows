@@ -22,6 +22,7 @@ import {
   extractIndexedAssetAuthor,
   type AssetMetadata,
   type AssetMetadataInput,
+  type AssetDeletionMode,
   type TagCatalog,
   type TagInput,
 } from "../lib/indexedAssets";
@@ -65,7 +66,7 @@ interface DetailPanelProps {
   onAudioProcessed: (asset: Asset, result: SaveAudioProcessingResult) => void;
   onMetadataResolved: (asset: Asset, metadata: AssetMetadata) => void;
   onRemoveFromIndex: (asset: Asset) => void;
-  onDeleteAsset: (asset: Asset) => void;
+  onDeleteAsset: (asset: Asset, deletionMode: AssetDeletionMode) => Promise<void>;
   tagCatalog?: TagCatalog;
   onSetTags: (asset: Asset, tagIds: number[]) => Promise<void>;
   onCreateTag: (input: TagInput) => Promise<number>;
@@ -356,12 +357,69 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
+function AssetDeleteDialog({ asset, onClose, onDelete }: {
+  asset: Asset;
+  onClose: () => void;
+  onDelete: (asset: Asset, deletionMode: AssetDeletionMode) => Promise<void>;
+}) {
+  const [deleting, setDeleting] = useState<AssetDeletionMode>();
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !deleting) onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [deleting, onClose]);
+
+  const remove = async (deletionMode: AssetDeletionMode) => {
+    if (deleting) return;
+    setDeleting(deletionMode);
+    setError("");
+    try {
+      await onDelete(asset, deletionMode);
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setDeleting(undefined);
+    }
+  };
+
+  return (
+    <div className="tag-picker-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !deleting && onClose()}>
+      <section className="asset-rename-dialog asset-delete-dialog" role="dialog" aria-modal="true" aria-label={`删除 ${asset.name}`}>
+        <header>
+          <div><Trash2 size={18} /><span><strong>删除资源</strong><small>{asset.name}</small></span></div>
+          <button className="icon-button small" disabled={Boolean(deleting)} onClick={onClose} aria-label="关闭"><span aria-hidden="true">×</span></button>
+        </header>
+        <div className="asset-delete-dialog-body">
+          <p>软件内的标签、来源信息和项目关联都会被永久清除。请选择原文件及项目副本的处理方式：</p>
+          <div className="asset-delete-choices">
+            <button type="button" disabled={Boolean(deleting)} onClick={() => void remove("trash")}>
+              <Trash2 size={18} />
+              <span><strong>{deleting === "trash" ? "正在删除…" : "放入回收站"}</strong><small>文件可以从系统回收站恢复</small></span>
+            </button>
+            <button type="button" className="permanent" disabled={Boolean(deleting)} onClick={() => void remove("permanent")}>
+              <Trash2 size={18} />
+              <span><strong>{deleting === "permanent" ? "正在永久删除…" : "永久删除"}</strong><small>文件将立即删除且无法恢复</small></span>
+            </button>
+          </div>
+          {error && <p className="asset-delete-error">{error}</p>}
+          <footer><button type="button" className="secondary-button" disabled={Boolean(deleting)} onClick={onClose}>取消</button></footer>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onDoubleBackgroundRemoved, onPngCompressed, onAudioProcessed, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, onDeleteAsset, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [backgroundRemovalOpen, setBackgroundRemovalOpen] = useState(false);
   const [doubleBackgroundRemovalOpen, setDoubleBackgroundRemovalOpen] = useState(false);
   const [pngCompressionOpen, setPngCompressionOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [audioProcessingOperation, setAudioProcessingOperation] = useState<AudioProcessingOperation>();
   return (
     <aside className="detail-panel">
@@ -467,8 +525,8 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
           {asset.id.startsWith("indexed-") && (
             <section className="detail-section asset-delete-section">
               <h3><Trash2 size={14} /> 删除资源</h3>
-              <p>删除软件内的资源信息，并将原文件及项目副本移入系统回收站。</p>
-              <button className="asset-delete-button" onClick={() => onDeleteAsset(asset)}><Trash2 size={14} /> 删除资源</button>
+              <p>删除软件内的资源信息，并选择如何处理电脑上的文件。</p>
+              <button className="asset-delete-button" onClick={() => setDeleteOpen(true)}><Trash2 size={14} /> 删除资源</button>
             </section>
           )}
         </div>
@@ -485,6 +543,9 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
       )}
       {asset && renameOpen && (
         <AssetRenameDialog asset={asset} onClose={() => setRenameOpen(false)} onRename={onRename} />
+      )}
+      {asset && deleteOpen && (
+        <AssetDeleteDialog asset={asset} onClose={() => setDeleteOpen(false)} onDelete={onDeleteAsset} />
       )}
       {asset && backgroundRemovalOpen && (
         <BackgroundRemovalDialog

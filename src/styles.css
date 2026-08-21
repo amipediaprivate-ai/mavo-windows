@@ -4180,6 +4180,87 @@ select:focus-visible,
   background: #fff0f2;
 }
 
+.asset-delete-dialog {
+  width: min(500px, calc(100vw - 48px));
+}
+
+.asset-delete-dialog-body {
+  padding: 17px;
+}
+
+.asset-delete-dialog-body > p {
+  margin: 0 0 14px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.asset-delete-choices {
+  display: grid;
+  gap: 9px;
+}
+
+.asset-delete-choices > button {
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid #dce2ea;
+  border-radius: 9px;
+  color: #435066;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.asset-delete-choices > button:hover:not(:disabled) {
+  border-color: #aeb9ca;
+  background: #f8fafc;
+}
+
+.asset-delete-choices > button.permanent {
+  border-color: #efc5cb;
+  color: #b63e50;
+  background: #fffafa;
+}
+
+.asset-delete-choices > button.permanent:hover:not(:disabled) {
+  border-color: #d97886;
+  background: #fff0f2;
+}
+
+.asset-delete-choices > button:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.asset-delete-choices span {
+  display: grid;
+  gap: 3px;
+}
+
+.asset-delete-choices strong {
+  font-size: 12px;
+}
+
+.asset-delete-choices small {
+  color: #8a94a4;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.asset-delete-dialog-body > p.asset-delete-error {
+  margin: 10px 0 0;
+  color: #c24152;
+}
+
+.asset-delete-dialog-body > footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 15px;
+}
+
 .toast {
   position: fixed;
   bottom: 24px;

@@ -390,8 +390,13 @@ export async function removeIndexedAsset(asset: Asset) {
   await invoke("remove_asset_from_index", { assetId: Number(asset.id.replace("indexed-", "")) });
 }
 
-export async function deleteIndexedAsset(asset: Asset) {
-  await invoke("delete_asset", { assetId: Number(asset.id.replace("indexed-", "")) });
+export type AssetDeletionMode = "trash" | "permanent";
+
+export async function deleteIndexedAsset(asset: Asset, deletionMode: AssetDeletionMode) {
+  await invoke("delete_asset", {
+    assetId: Number(asset.id.replace("indexed-", "")),
+    deletionMode,
+  });
 }
 
 export async function updateIndexedAssetMetadata(asset: Asset, input: AssetMetadataInput) {

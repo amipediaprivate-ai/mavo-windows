@@ -1353,10 +1353,11 @@ pub(crate) async fn add_asset_to_projects(
     .map_err(|error| error.to_string())?
 }
 
-fn remove_materialized_copy(
+fn remove_materialized_copy_with_mode(
     connection: &mut Connection,
     membership: &MembershipRecord,
     project: &ProjectRecord,
+    permanently_delete: bool,
 ) -> Result<(), String> {
     let relative_path = membership
         .copied_relative_path
@@ -1364,7 +1365,11 @@ fn remove_materialized_copy(
         .ok_or_else(|| "项目副本路径缺失".to_string())?;
     let path = path_for_relative(Path::new(&project.root_path), relative_path)?;
     if path.exists() {
-        trash::delete(&path).map_err(|error| format!("无法将项目副本移入回收站：{error}"))?;
+        if permanently_delete {
+            fs::remove_file(&path).map_err(|error| format!("无法永久删除项目副本：{error}"))?;
+        } else {
+            trash::delete(&path).map_err(|error| format!("无法将项目副本移入回收站：{error}"))?;
+        }
     }
     if let Some(asset_uid) = membership.materialized_asset_uid.as_deref() {
         let thumbnail: Option<String> = connection
@@ -1389,9 +1394,18 @@ fn remove_materialized_copy(
     Ok(())
 }
 
+fn remove_materialized_copy(
+    connection: &mut Connection,
+    membership: &MembershipRecord,
+    project: &ProjectRecord,
+) -> Result<(), String> {
+    remove_materialized_copy_with_mode(connection, membership, project, false)
+}
+
 pub(crate) fn remove_asset_from_all_projects(
     connection: &mut Connection,
     source_asset_uid: &str,
+    permanently_delete: bool,
 ) -> Result<(), String> {
     let membership_ids = {
         let mut statement = connection
@@ -1409,7 +1423,12 @@ pub(crate) fn remove_asset_from_all_projects(
         let membership = membership_record(connection, membership_id)?;
         let project = project_record(connection, membership.project_id)?;
         if membership.storage_mode == "copy" {
-            remove_materialized_copy(connection, &membership, &project)?;
+            remove_materialized_copy_with_mode(
+                connection,
+                &membership,
+                &project,
+                permanently_delete,
+            )?;
         }
         connection
             .execute(

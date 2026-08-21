@@ -3503,8 +3503,13 @@ fn remove_audio_playback_cache(app_data_dir: &Path, asset_id: i64) {
 }
 
 #[tauri::command]
-async fn delete_asset(asset_id: i64, app: AppHandle) -> Result<(), String> {
+async fn delete_asset(asset_id: i64, deletion_mode: String, app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let permanently_delete = match deletion_mode.as_str() {
+            "trash" => false,
+            "permanent" => true,
+            _ => return Err("删除方式无效".to_string()),
+        };
         let app_data_dir = app
             .path()
             .app_data_dir()
@@ -3525,11 +3530,16 @@ async fn delete_asset(asset_id: i64, app: AppHandle) -> Result<(), String> {
             if !source_path.is_file() {
                 return Err("资源路径不是可删除的文件".to_string());
             }
-            trash::delete(&source_path)
-                .map_err(|error| format!("无法将原文件移入回收站：{error}"))?;
+            if permanently_delete {
+                fs::remove_file(&source_path)
+                    .map_err(|error| format!("无法永久删除原文件：{error}"))?;
+            } else {
+                trash::delete(&source_path)
+                    .map_err(|error| format!("无法将原文件移入回收站：{error}"))?;
+            }
         }
 
-        projects::remove_asset_from_all_projects(&mut connection, &asset_uid)?;
+        projects::remove_asset_from_all_projects(&mut connection, &asset_uid, permanently_delete)?;
         connection
             .execute(
                 "DELETE FROM asset_tags WHERE asset_uid = ?1",
