@@ -358,12 +358,31 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
+const ASSET_DELETION_MODE_STORAGE_KEY = "caevir.assetDeletionMode";
+
+function storedAssetDeletionMode(): AssetDeletionMode {
+  try {
+    const stored = window.localStorage.getItem(ASSET_DELETION_MODE_STORAGE_KEY);
+    return stored === "permanent" || stored === "trash" ? stored : "trash";
+  } catch {
+    return "trash";
+  }
+}
+
+function rememberAssetDeletionMode(deletionMode: AssetDeletionMode) {
+  try {
+    window.localStorage.setItem(ASSET_DELETION_MODE_STORAGE_KEY, deletionMode);
+  } catch {
+    // Deletion should still succeed if local preference storage is unavailable.
+  }
+}
+
 function AssetDeleteDialog({ asset, onClose, onDelete }: {
   asset: Asset;
   onClose: () => void;
   onDelete: (asset: Asset, deletionMode: AssetDeletionMode) => Promise<void>;
 }) {
-  const [selectedMode, setSelectedMode] = useState<AssetDeletionMode>("trash");
+  const [selectedMode, setSelectedMode] = useState<AssetDeletionMode>(storedAssetDeletionMode);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
 
@@ -374,6 +393,11 @@ function AssetDeleteDialog({ asset, onClose, onDelete }: {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [deleting, onClose]);
+
+  const selectMode = (deletionMode: AssetDeletionMode) => {
+    setSelectedMode(deletionMode);
+    rememberAssetDeletionMode(deletionMode);
+  };
 
   const remove = async () => {
     if (deleting) return;
@@ -398,12 +422,12 @@ function AssetDeleteDialog({ asset, onClose, onDelete }: {
         <div className="asset-delete-dialog-body">
           <p>软件内的标签、来源信息和项目关联都会被永久清除。请选择原文件及项目副本的处理方式：</p>
           <div className="asset-delete-choices" role="radiogroup" aria-label="文件删除方式">
-            <button type="button" className={selectedMode === "trash" ? "selected" : undefined} role="radio" aria-checked={selectedMode === "trash"} disabled={deleting} onClick={() => setSelectedMode("trash")}>
+            <button type="button" className={selectedMode === "trash" ? "selected" : undefined} role="radio" aria-checked={selectedMode === "trash"} disabled={deleting} onClick={() => selectMode("trash")}>
               <Trash2 size={18} />
               <span><strong>放入回收站</strong><small>文件可以从系统回收站恢复</small></span>
               {selectedMode === "trash" && <CircleCheck className="selection-mark" size={17} />}
             </button>
-            <button type="button" className={`permanent ${selectedMode === "permanent" ? "selected" : ""}`} role="radio" aria-checked={selectedMode === "permanent"} disabled={deleting} onClick={() => setSelectedMode("permanent")}>
+            <button type="button" className={`permanent ${selectedMode === "permanent" ? "selected" : ""}`} role="radio" aria-checked={selectedMode === "permanent"} disabled={deleting} onClick={() => selectMode("permanent")}>
               <Trash2 size={18} />
               <span><strong>永久删除</strong><small>文件将立即删除且无法恢复</small></span>
               {selectedMode === "permanent" && <CircleCheck className="selection-mark" size={17} />}
