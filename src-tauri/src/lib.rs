@@ -3489,6 +3489,74 @@ fn remove_asset_from_index(asset_id: i64, app: AppHandle) -> Result<(), String> 
     Ok(())
 }
 
+fn remove_audio_playback_cache(app_data_dir: &Path, asset_id: i64) {
+    let cache_dir = app_data_dir.join("audio-playback-cache");
+    let prefix = format!("indexed-{asset_id}-");
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[tauri::command]
+async fn delete_asset(asset_id: i64, app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let app_data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let database_path = app_data_dir.join("caevir-index.sqlite3");
+        let mut connection = setup_database(&database_path)?;
+        let (path, thumbnail, asset_uid): (String, Option<String>, String) = connection
+            .query_row(
+                "SELECT path, thumbnail_path, asset_uid FROM indexed_assets
+                 WHERE rowid = ?1 AND asset_scope = 'library'",
+                params![asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| "资源不存在或已被删除".to_string())?;
+
+        let source_path = PathBuf::from(&path);
+        if source_path.exists() {
+            if !source_path.is_file() {
+                return Err("资源路径不是可删除的文件".to_string());
+            }
+            trash::delete(&source_path)
+                .map_err(|error| format!("无法将原文件移入回收站：{error}"))?;
+        }
+
+        projects::remove_asset_from_all_projects(&mut connection, &asset_uid)?;
+        connection
+            .execute(
+                "DELETE FROM asset_tags WHERE asset_uid = ?1",
+                params![asset_uid],
+            )
+            .map_err(|error| error.to_string())?;
+        let deleted = connection
+            .execute(
+                "DELETE FROM indexed_assets WHERE rowid = ?1 AND asset_scope = 'library'",
+                params![asset_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if deleted == 0 {
+            return Err("资源不存在或已被删除".to_string());
+        }
+
+        if let Some(thumbnail) = thumbnail {
+            let _ = fs::remove_file(thumbnail);
+        }
+        remove_audio_playback_cache(&app_data_dir, asset_id);
+        let _ = app.emit("asset-index-changed", ());
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn hash_file(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|error| error.to_string())?;
     let mut hasher = blake3::Hasher::new();
@@ -5511,6 +5579,7 @@ pub fn run() {
             extract_asset_author,
             relink_asset,
             remove_asset_from_index,
+            delete_asset,
             scan_duplicates,
             list_background_tasks,
             note_user_interaction,

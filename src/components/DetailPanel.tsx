@@ -13,6 +13,7 @@ import {
   FileAudio,
   Sparkles,
   Tag,
+  Trash2,
   UserRound,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
@@ -64,6 +65,7 @@ interface DetailPanelProps {
   onAudioProcessed: (asset: Asset, result: SaveAudioProcessingResult) => void;
   onMetadataResolved: (asset: Asset, metadata: AssetMetadata) => void;
   onRemoveFromIndex: (asset: Asset) => void;
+  onDeleteAsset: (asset: Asset) => void;
   tagCatalog?: TagCatalog;
   onSetTags: (asset: Asset, tagIds: number[]) => Promise<void>;
   onCreateTag: (input: TagInput) => Promise<number>;
@@ -354,7 +356,7 @@ function AssetRenameDialog({ asset, onClose, onRename }: { asset: Asset; onClose
   );
 }
 
-export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onDoubleBackgroundRemoved, onPngCompressed, onAudioProcessed, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
+export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFolder, onRelink, onRename, onBackgroundRemoved, onDoubleBackgroundRemoved, onPngCompressed, onAudioProcessed, onUpdateMetadata, onMetadataResolved, onRemoveFromIndex, onDeleteAsset, tagCatalog, onSetTags, onCreateTag, onCreateTagGroup, onFilterTag, projectRevision, onProjectsChanged }: DetailPanelProps) {
   const [tagPickerOpen, setTagPickerOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [backgroundRemovalOpen, setBackgroundRemovalOpen] = useState(false);
@@ -460,6 +462,13 @@ export function DetailPanel({ asset, onClose, onAction, onViewOriginal, onOpenFo
               <p>重新选择原文件可保留当前资产记录；清理只移除索引和缓存，不会删除磁盘文件。</p>
               <button className="secondary-button" onClick={() => onRelink(asset)}>重新定位</button>
               <button className="text-button danger" onClick={() => onRemoveFromIndex(asset)}>从索引清理</button>
+            </section>
+          )}
+          {asset.id.startsWith("indexed-") && (
+            <section className="detail-section asset-delete-section">
+              <h3><Trash2 size={14} /> 删除资源</h3>
+              <p>删除软件内的资源信息，并将原文件及项目副本移入系统回收站。</p>
+              <button className="asset-delete-button" onClick={() => onDeleteAsset(asset)}><Trash2 size={14} /> 删除资源</button>
             </section>
           )}
         </div>

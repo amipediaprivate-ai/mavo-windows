@@ -1389,6 +1389,44 @@ fn remove_materialized_copy(
     Ok(())
 }
 
+pub(crate) fn remove_asset_from_all_projects(
+    connection: &mut Connection,
+    source_asset_uid: &str,
+) -> Result<(), String> {
+    let membership_ids = {
+        let mut statement = connection
+            .prepare("SELECT id FROM project_assets WHERE source_asset_uid = ?1 ORDER BY id")
+            .map_err(|error| error.to_string())?;
+        let ids = statement
+            .query_map(params![source_asset_uid], |row| row.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        ids
+    };
+
+    for membership_id in membership_ids {
+        let membership = membership_record(connection, membership_id)?;
+        let project = project_record(connection, membership.project_id)?;
+        if membership.storage_mode == "copy" {
+            remove_materialized_copy(connection, &membership, &project)?;
+        }
+        connection
+            .execute(
+                "DELETE FROM project_assets WHERE id = ?1",
+                params![membership.id],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "UPDATE projects SET updated_at_ms = ?1 WHERE id = ?2",
+                params![now_ms() as i64, project.id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn update_project_asset(
     membership_id: i64,

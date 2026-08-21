@@ -46,6 +46,7 @@ import {
   updateIndexedAssetMetadata,
   relinkIndexedAsset,
   removeIndexedAsset,
+  deleteIndexedAsset,
   saveTagGroup,
   saveSmartView,
   scanDuplicateAssets,
@@ -848,6 +849,29 @@ export default function App() {
     }
   };
 
+  const handleDeleteAsset = async (asset: (typeof libraryAssets)[number]) => {
+    const confirmed = window.confirm(
+      `确定删除「${asset.name}」？\n\n软件内的标签、来源信息和项目关联会被永久删除；原文件及项目副本会移入系统回收站。`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteIndexedAsset(asset);
+      setLibraryAssets((current) => current.filter((item) => item.id !== asset.id));
+      selectedAssetCache.current.delete(asset.id);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        next.delete(asset.id);
+        return next;
+      });
+      setSelectedId((current) => current === asset.id ? "" : current);
+      setIndexRevision((revision) => revision + 1);
+      setProjectRevision((revision) => revision + 1);
+      showToast("资源已删除，本地文件已移入回收站");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "无法删除资源");
+    }
+  };
+
   const handleOpenFolder = async (asset: (typeof libraryAssets)[number]) => {
     try {
       await openAssetFolder(asset);
@@ -1056,6 +1080,7 @@ export default function App() {
             onUpdateMetadata={handleUpdateAssetMetadata}
             onMetadataResolved={applyAssetMetadata}
             onRemoveFromIndex={(asset) => void handleRemoveFromIndex(asset)}
+            onDeleteAsset={(asset) => void handleDeleteAsset(asset)}
             tagCatalog={tagCatalog}
             onAudioProcessed={handleAudioProcessed}
             onSetTags={handleSetAssetTags}
