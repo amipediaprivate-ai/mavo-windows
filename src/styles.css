@@ -4214,9 +4214,19 @@ select:focus-visible,
   cursor: pointer;
 }
 
+.asset-delete-choices > button > span {
+  flex: 1;
+}
+
 .asset-delete-choices > button:hover:not(:disabled) {
   border-color: #aeb9ca;
   background: #f8fafc;
+}
+
+.asset-delete-choices > button.selected {
+  border-color: #7187a6;
+  background: #f4f7fb;
+  box-shadow: 0 0 0 1px #7187a622;
 }
 
 .asset-delete-choices > button.permanent {
@@ -4228,6 +4238,12 @@ select:focus-visible,
 .asset-delete-choices > button.permanent:hover:not(:disabled) {
   border-color: #d97886;
   background: #fff0f2;
+}
+
+.asset-delete-choices > button.permanent.selected {
+  border-color: #d95d70;
+  background: #fff0f2;
+  box-shadow: 0 0 0 1px #d95d7022;
 }
 
 .asset-delete-choices > button:disabled {
@@ -4250,6 +4266,15 @@ select:focus-visible,
   font-weight: 400;
 }
 
+.asset-delete-choices .selection-mark {
+  flex: 0 0 auto;
+  color: #607796;
+}
+
+.asset-delete-choices .permanent .selection-mark {
+  color: #c94b5e;
+}
+
 .asset-delete-dialog-body > p.asset-delete-error {
   margin: 10px 0 0;
   color: #c24152;
@@ -4259,6 +4284,21 @@ select:focus-visible,
   display: flex;
   justify-content: flex-end;
   margin-top: 15px;
+}
+
+.asset-delete-confirm {
+  min-width: 82px;
+}
+
+.asset-delete-confirm.permanent {
+  border-color: #c94b5e;
+  background: #c94b5e;
+  box-shadow: 0 5px 12px rgba(201, 75, 94, 0.18);
+}
+
+.asset-delete-confirm.permanent:hover:not(:disabled) {
+  border-color: #b63e50;
+  background: #b63e50;
 }
 
 .toast {

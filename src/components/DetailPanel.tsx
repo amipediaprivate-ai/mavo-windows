@@ -1,6 +1,7 @@
 import {
   ArrowLeftRight,
   ChevronRight,
+  CircleCheck,
   CircleDot,
   ExternalLink,
   FolderOpen,
@@ -362,7 +363,8 @@ function AssetDeleteDialog({ asset, onClose, onDelete }: {
   onClose: () => void;
   onDelete: (asset: Asset, deletionMode: AssetDeletionMode) => Promise<void>;
 }) {
-  const [deleting, setDeleting] = useState<AssetDeletionMode>();
+  const [selectedMode, setSelectedMode] = useState<AssetDeletionMode>("trash");
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -373,16 +375,16 @@ function AssetDeleteDialog({ asset, onClose, onDelete }: {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [deleting, onClose]);
 
-  const remove = async (deletionMode: AssetDeletionMode) => {
+  const remove = async () => {
     if (deleting) return;
-    setDeleting(deletionMode);
+    setDeleting(true);
     setError("");
     try {
-      await onDelete(asset, deletionMode);
+      await onDelete(asset, selectedMode);
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-      setDeleting(undefined);
+      setDeleting(false);
     }
   };
 
@@ -395,18 +397,20 @@ function AssetDeleteDialog({ asset, onClose, onDelete }: {
         </header>
         <div className="asset-delete-dialog-body">
           <p>软件内的标签、来源信息和项目关联都会被永久清除。请选择原文件及项目副本的处理方式：</p>
-          <div className="asset-delete-choices">
-            <button type="button" disabled={Boolean(deleting)} onClick={() => void remove("trash")}>
+          <div className="asset-delete-choices" role="radiogroup" aria-label="文件删除方式">
+            <button type="button" className={selectedMode === "trash" ? "selected" : undefined} role="radio" aria-checked={selectedMode === "trash"} disabled={deleting} onClick={() => setSelectedMode("trash")}>
               <Trash2 size={18} />
-              <span><strong>{deleting === "trash" ? "正在删除…" : "放入回收站"}</strong><small>文件可以从系统回收站恢复</small></span>
+              <span><strong>放入回收站</strong><small>文件可以从系统回收站恢复</small></span>
+              {selectedMode === "trash" && <CircleCheck className="selection-mark" size={17} />}
             </button>
-            <button type="button" className="permanent" disabled={Boolean(deleting)} onClick={() => void remove("permanent")}>
+            <button type="button" className={`permanent ${selectedMode === "permanent" ? "selected" : ""}`} role="radio" aria-checked={selectedMode === "permanent"} disabled={deleting} onClick={() => setSelectedMode("permanent")}>
               <Trash2 size={18} />
-              <span><strong>{deleting === "permanent" ? "正在永久删除…" : "永久删除"}</strong><small>文件将立即删除且无法恢复</small></span>
+              <span><strong>永久删除</strong><small>文件将立即删除且无法恢复</small></span>
+              {selectedMode === "permanent" && <CircleCheck className="selection-mark" size={17} />}
             </button>
           </div>
           {error && <p className="asset-delete-error">{error}</p>}
-          <footer><button type="button" className="secondary-button" disabled={Boolean(deleting)} onClick={onClose}>取消</button></footer>
+          <footer><button type="button" className={`primary-button asset-delete-confirm ${selectedMode === "permanent" ? "permanent" : ""}`} disabled={deleting} onClick={() => void remove()}>{deleting ? "正在删除…" : "确认"}</button></footer>
         </div>
       </section>
     </div>
