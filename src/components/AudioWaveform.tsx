@@ -109,11 +109,11 @@ export function AudioWaveform({ asset, variant }: AudioWaveformProps) {
     >
       <span id={hintId} className="sr-only">点击任意位置跳转并播放，左右方向键每次移动五秒</span>
       <div className="audio-waveform-base">
-        {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <FallbackWaveform color="#94a0b4" />}
+        {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} loading="lazy" decoding="async" /> : <FallbackWaveform color="#94a0b4" />}
       </div>
       <div className="audio-waveform-progress" style={{ clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)` }}>
         <div className="audio-waveform-progress-inner">
-          {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} /> : <FallbackWaveform color="#3f64e8" />}
+          {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt="" draggable={false} loading="lazy" decoding="async" /> : <FallbackWaveform color="#3f64e8" />}
         </div>
       </div>
       {active && <span className="audio-playhead" style={{ left: `${progress * 100}%` }} />}

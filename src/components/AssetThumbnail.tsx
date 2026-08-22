@@ -5,7 +5,7 @@ export function AssetThumbnail({ asset, large = false }: { asset: Asset; large?:
   if (asset.thumbnailUrl) {
     return (
       <div className={`asset-thumbnail real-preview ${large ? "large" : ""}`}>
-        <img src={asset.thumbnailUrl} alt={`${asset.name} 预览`} loading="lazy" />
+        <img src={asset.thumbnailUrl} alt={`${asset.name} 预览`} loading="lazy" decoding="async" />
       </div>
     );
   }

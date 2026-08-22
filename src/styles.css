@@ -1979,6 +1979,16 @@ select:focus-visible,
   height: auto;
 }
 
+.asset-page-grid .asset-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 190px;
+}
+
+.asset-page-list .asset-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 56px;
+}
+
 .asset-page-sentinel {
   width: 100%;
   height: 1px;

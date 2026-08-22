@@ -104,6 +104,8 @@ const categoryKinds: Partial<Record<string, AssetKind>> = {
 };
 
 const ASSET_PAGE_SIZE = 60;
+const INDEXED_SEARCH_DEBOUNCE_MS = 250;
+const INDEXED_TOTAL_CACHE_LIMIT = 32;
 
 const initialAssetPages: Record<AssetView, number> = {
   grid: 0,
@@ -123,6 +125,7 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<"资产" | "项目" | "工具">("资产");
   const [libraryAssets, setLibraryAssets] = useState(initialAssets);
   const [query, setQuery] = useState("");
+  const [indexedSearchQuery, setIndexedSearchQuery] = useState("");
   const [toolQuery, setToolQuery] = useState("");
   const [projectQuery, setProjectQuery] = useState("");
   const [projectRevision, setProjectRevision] = useState(0);
@@ -155,7 +158,10 @@ export default function App() {
   const toastTimer = useRef<number | undefined>(undefined);
   const assetRequest = useRef(0);
   const indexedModeRef = useRef(indexedMode);
+  const indexedTotalRef = useRef(indexedTotal);
   const indexedQueryOptionsRef = useRef<LoadIndexedAssetsOptions>({});
+  const indexedQueryKeyRef = useRef("");
+  const indexedTotalCacheRef = useRef(new Map<string, number>());
   const activeAssetPageRef = useRef(0);
   const successfulAssetPagesRef = useRef(initialAssetPages);
   const lastSelectedId = useRef<string | undefined>(undefined);
@@ -181,6 +187,11 @@ export default function App() {
   }, []);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setIndexedSearchQuery(query), INDEXED_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   useEffect(() => {
     let lastSignal = 0;
@@ -218,34 +229,43 @@ export default function App() {
       }
     : activeModule === "智能视图" ? filters : { ...filters, audioDirectoryPath: undefined }, [activeCategoryKind, activeModule, filters]);
   const indexedQueryOptions = useMemo<LoadIndexedAssetsOptions>(() => ({
-    query,
+    query: indexedSearchQuery,
     filters: effectiveFilters,
     sort: activeModule === "重复文件" ? "duplicates" : sort,
     availability: activeModule === "缺失文件" ? "missing" : "available",
     duplicateOnly: activeModule === "重复文件",
-  }), [activeModule, effectiveFilters, query, sort]);
+  }), [activeModule, effectiveFilters, indexedSearchQuery, sort]);
   const backgroundHeavyWorkRunning = backgroundTasks.some((task) =>
     task.status === "running" && ["analysis", "thumbnail", "loudness"].includes(task.taskType));
   indexedModeRef.current = indexedMode;
+  indexedTotalRef.current = indexedTotal;
   indexedQueryOptionsRef.current = indexedQueryOptions;
   const activeAssetPage = assetPages[view];
   activeAssetPageRef.current = activeAssetPage;
   const assetPageCount = indexedMode ? Math.max(1, Math.ceil(indexedTotal / ASSET_PAGE_SIZE)) : 1;
   const assetBrowseKey = useMemo(() => JSON.stringify(indexedQueryOptions), [indexedQueryOptions]);
+  indexedQueryKeyRef.current = assetBrowseKey;
 
   const refreshIndexedAssets = async (forceIndexedMode = false, requestedPage = activeAssetPageRef.current) => {
     const requestId = ++assetRequest.current;
+    const queryKey = indexedQueryKeyRef.current;
+    const cachedTotal = indexedTotalCacheRef.current.get(queryKey);
     setLoadingAssets(true);
     try {
       const page = await loadIndexedAssets({
         ...indexedQueryOptionsRef.current,
         offset: requestedPage * ASSET_PAGE_SIZE,
         limit: ASSET_PAGE_SIZE,
-        includeTotal: true,
+        includeTotal: cachedTotal === undefined,
       });
       if (requestId !== assetRequest.current) return;
-      if ((page.total ?? 0) > 0 || forceIndexedMode || indexedModeRef.current) {
-        const total = page.total ?? 0;
+      if (page.total != null) {
+        const cache = indexedTotalCacheRef.current;
+        cache.set(queryKey, page.total);
+        if (cache.size > INDEXED_TOTAL_CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+      }
+      const total = page.total ?? cachedTotal ?? indexedTotalRef.current;
+      if (total > 0 || forceIndexedMode || indexedModeRef.current) {
         const lastPage = Math.max(0, Math.ceil(total / ASSET_PAGE_SIZE) - 1);
         setIndexedMode(true);
         if (requestedPage > lastPage) {
@@ -343,7 +363,7 @@ export default function App() {
     const timer = window.setTimeout(() => void refreshIndexedAssets(true, activeAssetPage), 100);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAssetPage, activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, query, sort, view]);
+  }, [activeAssetPage, activeModule, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexedMode, indexedSearchQuery, sort, view]);
 
   useEffect(() => {
     if (!indexedMode || backgroundHeavyWorkRunning) return;
@@ -353,7 +373,7 @@ export default function App() {
     }, 220);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, backgroundHeavyWorkRunning, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
+  }, [activeModule, backgroundHeavyWorkRunning, filters.kind, filters.format, filters.folder, filters.tags, filters.audioDirectoryPath, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, indexedSearchQuery]);
 
   useEffect(() => {
     if (!indexedMode || activeModule !== "音频") {
@@ -382,11 +402,14 @@ export default function App() {
     };
     // Directory selection is deliberately excluded so the tree remains stable while navigating.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, backgroundHeavyWorkRunning, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, query]);
+  }, [activeModule, backgroundHeavyWorkRunning, filters.kind, filters.format, filters.folder, filters.minWidth, filters.maxWidth, filters.orientation, filters.minDurationMs, filters.maxDurationMs, indexRevision, indexedMode, indexedSearchQuery]);
 
   useEffect(() => {
     if (indexRevision === 0 || backgroundHeavyWorkRunning) return;
-    const timer = window.setTimeout(() => void refreshIndexedAssets(true, activeAssetPageRef.current), 500);
+    const timer = window.setTimeout(() => {
+      indexedTotalCacheRef.current.delete(indexedQueryKeyRef.current);
+      void refreshIndexedAssets(true, activeAssetPageRef.current);
+    }, 500);
     return () => window.clearTimeout(timer);
     // Coalesce the scan writer and thumbnail worker's frequent commit notifications.
     // eslint-disable-next-line react-hooks/exhaustive-deps

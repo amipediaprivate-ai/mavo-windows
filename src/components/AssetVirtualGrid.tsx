@@ -24,32 +24,39 @@ interface AssetPagedGridProps {
 }
 
 type PageDirection = "previous" | "next";
+const EMPTY_SELECTED_IDS = new Set<string>();
 
-function AssetCard({
+const AssetCard = memo(function AssetCard({
   asset,
   selected,
   view,
   onSelect,
-  onActivate,
   onOpen,
 }: {
   asset: Asset;
   selected: boolean;
   view: AssetView;
-  onSelect: (event: MouseEvent<HTMLElement>) => void;
-  onActivate: () => void;
-  onOpen: () => void;
+  onSelect: (asset: Asset, mode: "replace" | "toggle" | "range") => void;
+  onOpen: (asset: Asset) => void;
 }) {
   const showsCardMetadata = view !== "list";
+  const selectFromEvent = (event: MouseEvent<HTMLElement>) => {
+    const mode = event.shiftKey
+      ? "range"
+      : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check")
+        ? "toggle"
+        : "replace";
+    onSelect(asset, mode);
+  };
   return (
     <article
       className={`asset-card ${selected ? "selected" : ""} ${view === "list" ? "list-card" : ""} ${view === "list" && asset.kind === "音频" ? "audio-list-card" : ""} ${view === "masonry" ? "masonry-card" : ""}`}
       data-asset-id={asset.id}
       tabIndex={0}
-      onClick={onSelect}
-      onDoubleClick={onOpen}
+      onClick={selectFromEvent}
+      onDoubleClick={() => onOpen(asset)}
       onKeyDown={(event) => {
-        if (event.key === "Enter") onSelect(event as unknown as MouseEvent<HTMLElement>);
+        if (event.key === "Enter") selectFromEvent(event as unknown as MouseEvent<HTMLElement>);
       }}
     >
       {view === "masonry" && (
@@ -58,7 +65,7 @@ function AssetCard({
           aria-label={selected ? "取消选择" : "选择资源"}
           onClick={(event) => {
             event.stopPropagation();
-            onSelect(event);
+            selectFromEvent(event);
           }}
         >{selected ? "✓" : ""}</button>
       )}
@@ -67,7 +74,7 @@ function AssetCard({
         style={view === "masonry" ? { aspectRatio: assetAspectRatio(asset) } : undefined}
       >
         {asset.kind === "音频" ? (
-          <AudioCardPlayer asset={asset} onActivate={onActivate} />
+          <AudioCardPlayer asset={asset} onActivate={() => onSelect(asset, "replace")} />
         ) : asset.kind === "视频" ? (
           <VideoCardPlayer asset={asset} />
         ) : asset.kind === "动图" ? (
@@ -101,12 +108,12 @@ function AssetCard({
       </div>
     </article>
   );
-}
+});
 
 function AssetPagedGridComponent({
   assets,
   selectedId,
-  selectedIds = new Set<string>(),
+  selectedIds = EMPTY_SELECTED_IDS,
   view,
   cardWidth,
   onSelect,
@@ -233,9 +240,8 @@ function AssetPagedGridComponent({
       asset={asset}
       selected={selectedIds.has(asset.id) || selectedId === asset.id}
       view={view}
-      onSelect={(event) => onSelect(asset, event.shiftKey ? "range" : event.ctrlKey || event.metaKey || event.currentTarget.classList.contains("asset-select-check") ? "toggle" : "replace")}
-      onActivate={() => onSelect(asset, "replace")}
-      onOpen={() => onOpen(asset)}
+      onSelect={onSelect}
+      onOpen={onOpen}
     />
   );
 
