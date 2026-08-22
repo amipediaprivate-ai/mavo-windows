@@ -1,7 +1,9 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
+  Archive,
+  ArchiveRestore,
   Box,
   CircleAlert,
   Copy,
@@ -41,6 +43,8 @@ import {
   type ProjectStorageMode,
 } from "../lib/projects";
 import { enrichPendingPreviews } from "../lib/indexedAssets";
+import { PackageTransferDialog } from "./PackageTransferDialog";
+import { exportProjectArchive, importProjectArchive, type PackageProgress, type PackageSummary } from "../lib/portablePackages";
 
 interface ProjectWorkspaceProps {
   query: string;
@@ -53,6 +57,12 @@ interface TextDialogState {
   title: string;
   label: string;
   initialValue: string;
+}
+
+interface PackageDialogState {
+  title: string;
+  description: string;
+  run: (onProgress: (progress: PackageProgress) => void, operationId: string) => Promise<PackageSummary>;
 }
 
 function errorText(error: unknown) {
@@ -165,6 +175,7 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [textDialog, setTextDialog] = useState<TextDialogState>();
+  const [packageDialog, setPackageDialog] = useState<PackageDialogState>();
   const activeProject = projects.find((project) => project.id === activeProjectId);
 
   const refreshProjects = useCallback(async () => {
@@ -287,6 +298,34 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
 
   const availableDirectories = useMemo(() => directories.filter((directory) => directory.exists), [directories]);
 
+  const archiveProject = async () => {
+    if (!activeProject) return;
+    const selected = await save({
+      title: "归档 Caevir 项目",
+      defaultPath: `${activeProject.name}.caeproject`,
+      filters: [{ name: "Caevir 项目归档", extensions: ["caeproject"] }],
+    });
+    if (!selected) return;
+    const outputPath = selected.toLowerCase().endsWith(".caeproject") ? selected : `${selected}.caeproject`;
+    setPackageDialog({
+      title: `归档项目“${activeProject.name}”`,
+      description: "正在收集项目副本与外部引用，归档不会依赖原机器绝对路径",
+      run: (onProgress, operationId) => exportProjectArchive(activeProject.id, outputPath, onProgress, operationId),
+    });
+  };
+
+  const importProject = async () => {
+    const packagePath = await open({ title: "选择 Caevir 项目归档", multiple: false, directory: false, filters: [{ name: "Caevir 项目归档", extensions: ["caeproject"] }] });
+    if (typeof packagePath !== "string") return;
+    const destinationParent = await open({ title: "选择项目恢复位置", multiple: false, directory: true });
+    if (typeof destinationParent !== "string") return;
+    setPackageDialog({
+      title: "导入项目归档",
+      description: "将在所选位置恢复为独立、可用且不依赖原机器路径的项目",
+      run: (onProgress, operationId) => importProjectArchive(packagePath, destinationParent, onProgress, operationId),
+    });
+  };
+
   if (activeProject) {
     return (
       <section className="project-workspace project-detail-workspace">
@@ -299,6 +338,7 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
             <button className="secondary-button" disabled={busy || activeProject.status !== "ready"} onClick={() => void openProjectFolder(activeProject.id).catch((error) => onAction(errorText(error)))}><FolderOpen size={14} /> 打开文件夹</button>
             <button className="secondary-button" disabled={busy || activeProject.status !== "ready"} onClick={() => setTextDialog({ kind: "rename", title: "重命名项目", label: "新项目名称", initialValue: activeProject.name })}><PencilLine size={14} /> 重命名</button>
             <button className="secondary-button" disabled={busy || activeProject.status !== "ready"} onClick={() => void chooseMoveLocation()}><FolderInput size={14} /> 调整位置</button>
+            <button className="secondary-button" disabled={busy || activeProject.status !== "ready"} onClick={() => void archiveProject()} title="归档项目" aria-label="归档项目"><Archive size={14} /> 归档项目</button>
             <button className="icon-button" disabled={busy} onClick={() => { void refreshProjectContent(activeProject.id); void refreshProjects(); }} aria-label="刷新项目"><RefreshCw size={15} /></button>
           </div>
         </header>
@@ -345,13 +385,14 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
             onAction("项目子文件夹已创建");
           }
         }} />}
+        {packageDialog && <PackageTransferDialog title={packageDialog.title} description={packageDialog.description} run={packageDialog.run} onClose={() => setPackageDialog(undefined)} onCompleted={() => onProjectsChanged()} />}
       </section>
     );
   }
 
   return (
     <section className="project-workspace">
-      <header className="project-list-header"><div><h1>项目</h1><p>将同一工作使用的资源组织到项目文件夹中</p></div><button className="primary-button" onClick={() => setCreateOpen(true)}><Plus size={15} /> 新建项目</button></header>
+      <header className="project-list-header"><div><h1>项目</h1><p>将同一工作使用的资源组织到项目文件夹中</p></div><button className="secondary-button" onClick={() => void importProject()}><ArchiveRestore size={15} /> 导入项目归档</button><button className="primary-button" onClick={() => setCreateOpen(true)}><Plus size={15} /> 新建项目</button></header>
       {loading ? <div className="project-empty"><RefreshCw className="spin" size={28} /><strong>正在加载项目…</strong></div> : projects.length === 0 ? (
         <div className="project-empty"><Box size={40} /><strong>{query ? "没有匹配的项目" : "还没有项目"}</strong><span>{query ? "请更换搜索内容" : "创建项目后，可通过标记或复制方式组织资产。"}</span>{!query && <button className="primary-button" onClick={() => setCreateOpen(true)}><Plus size={15} /> 创建第一个项目</button>}</div>
       ) : (
@@ -365,6 +406,12 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
         ))}</div>
       )}
       {createOpen && <CreateProjectDialog onClose={() => setCreateOpen(false)} onCreated={handleCreate} />}
+      {packageDialog && <PackageTransferDialog title={packageDialog.title} description={packageDialog.description} run={packageDialog.run} onClose={() => setPackageDialog(undefined)} onCompleted={(summary) => {
+        void refreshProjects();
+        if (summary.projectId !== undefined) setActiveProjectId(summary.projectId);
+        onProjectsChanged();
+        void enrichPendingPreviews(() => undefined).catch(() => undefined);
+      }} />}
     </section>
   );
 }

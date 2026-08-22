@@ -1,4 +1,4 @@
-import { Check, Tag, X } from "lucide-react";
+import { Archive, Check, Tag, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { TagCatalog } from "../lib/indexedAssets";
 import type { Asset } from "../types";
@@ -8,9 +8,10 @@ interface BatchTagToolbarProps {
   catalog: TagCatalog;
   onClear: () => void;
   onApply: (tagIds: number[], operation: "add" | "remove") => Promise<void>;
+  onExport: () => void;
 }
 
-export function BatchTagToolbar({ assets, catalog, onClear, onApply }: BatchTagToolbarProps) {
+export function BatchTagToolbar({ assets, catalog, onClear, onApply, onExport }: BatchTagToolbarProps) {
   const [operation, setOperation] = useState<"add" | "remove">();
   const [selected, setSelected] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
@@ -40,6 +41,7 @@ export function BatchTagToolbar({ assets, catalog, onClear, onApply }: BatchTagT
         <span><Check size={14} /> 已选择 <strong>{assets.length}</strong> 个资源</span>
         <button onClick={() => setOperation("add")}><Tag size={14} /> 添加标签</button>
         <button onClick={() => setOperation("remove")}>移除标签</button>
+        <button onClick={onExport}><Archive size={14} /> 导出资产包</button>
         <button className="batch-clear" onClick={onClear}><X size={14} /> 取消选择</button>
       </div>
       {operation && (

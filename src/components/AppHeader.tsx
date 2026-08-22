@@ -40,6 +40,7 @@ interface AppHeaderProps {
   onAction: (message: string) => void;
   onOpenScan: (scope: ScanScope) => void;
   onRefresh: () => void;
+  onImportPackage: () => void;
   smartViews: SmartView[];
   activeSmartViewId?: number;
   onSmartViewSelect: (viewId: number) => void;
@@ -71,6 +72,7 @@ export function AppHeader({
   onAction,
   onOpenScan,
   onRefresh,
+  onImportPackage,
   smartViews,
   activeSmartViewId,
   onSmartViewSelect,
@@ -302,8 +304,8 @@ export function AppHeader({
           <button className="secondary-button compact" onClick={() => onOpenScan("computer")}>
             <HardDrive size={14} /> 扫描电脑
           </button>
-          <button className="primary-button compact" onClick={() => onAction("导入面板已打开")}>
-            <Import size={14} /> 导入资源
+          <button className="primary-button compact" onClick={onImportPackage}>
+            <Import size={14} /> 导入资产包
           </button>
           <button className="library-switch" onClick={() => onAction("资源库切换器已打开")}>
             <LibraryBig size={14} /> 游戏美术资源库 <ChevronDown size={13} />

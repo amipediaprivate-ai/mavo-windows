@@ -42,6 +42,7 @@ mod background_removal;
 mod database_lifecycle;
 mod double_background_removal;
 mod png_compression;
+mod portable_packages;
 mod projects;
 
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
@@ -5611,6 +5612,11 @@ pub fn run() {
             projects::remove_asset_from_project,
             projects::open_project_asset,
             projects::open_project_asset_folder,
+            portable_packages::export_asset_package,
+            portable_packages::import_asset_package,
+            portable_packages::export_project_archive,
+            portable_packages::import_project_archive,
+            portable_packages::cancel_package_operation,
             start_scan,
             cancel_scan
         ])

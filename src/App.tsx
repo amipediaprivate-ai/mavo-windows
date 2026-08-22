@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   BookmarkPlus,
   ChevronDown,
@@ -27,6 +27,7 @@ import { ScanDialog } from "./components/ScanDialog";
 import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { TagManager } from "./components/TagManager";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
+import { PackageTransferDialog } from "./components/PackageTransferDialog";
 import { assets as initialAssets } from "./data/assets";
 import {
   deleteSmartView,
@@ -68,6 +69,7 @@ import type { SaveBackgroundRemovalResult } from "./lib/backgroundRemoval";
 import type { SaveDoubleBackgroundRemovalResult } from "./lib/doubleBackgroundRemoval";
 import type { SavePngCompressionResult } from "./lib/pngCompression";
 import type { SaveAudioProcessingResult } from "./lib/audioProcessing";
+import { exportAssetPackage, importAssetPackage, type PackageProgress, type PackageSummary } from "./lib/portablePackages";
 
 const emptyFilters: Filters = {
   source: [],
@@ -78,6 +80,12 @@ const emptyFilters: Filters = {
 };
 
 type ListFilterKey = "source" | "kind" | "format" | "folder";
+
+interface PackageDialogState {
+  title: string;
+  description: string;
+  run: (onProgress: (progress: PackageProgress) => void, operationId: string) => Promise<PackageSummary>;
+}
 type FilterChipKey = ListFilterKey | "tags" | "audioDirectoryPath" | "query";
 
 function directoryLabel(path: string) {
@@ -135,6 +143,7 @@ export default function App() {
   const [loadingAssets, setLoadingAssets] = useState(false);
   const [indexRevision, setIndexRevision] = useState(0);
   const [previewAssetId, setPreviewAssetId] = useState<string>();
+  const [packageDialog, setPackageDialog] = useState<PackageDialogState>();
   const [facets, setFacets] = useState<AssetFacets>();
   const [audioDirectoryTree, setAudioDirectoryTree] = useState<AssetDirectoryTree>();
   const [audioDirectoryTreeLoading, setAudioDirectoryTreeLoading] = useState(false);
@@ -850,6 +859,45 @@ export default function App() {
     }
   };
 
+  const handleExportAssetPackage = async () => {
+    const selected = [...selectedAssetCache.current.values()].filter((asset) => selectedIds.has(asset.id));
+    if (selected.some((asset) => !asset.id.startsWith("indexed-"))) {
+      showToast("演示资源不能导出；请先扫描并选择真实资产库文件");
+      return;
+    }
+    const ids = selected.map((asset) => Number.parseInt(asset.id.slice("indexed-".length), 10));
+    if (!ids.length || ids.some((id) => !Number.isSafeInteger(id))) {
+      showToast("请选择真实资产库中的资源");
+      return;
+    }
+    let outputPath: string | null;
+    try {
+      outputPath = await save({ title: "导出 Caevir 资产包", defaultPath: "Caevir Assets.caepack", filters: [{ name: "Caevir 资产包", extensions: ["caepack"] }] });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "无法打开保存对话框");
+      return;
+    }
+    if (!outputPath) return;
+    const finalPath = outputPath.toLowerCase().endsWith(".caepack") ? outputPath : `${outputPath}.caepack`;
+    setPackageDialog({
+      title: "导出资产包",
+      description: `正在打包 ${ids.length} 个真实资产及其可迁移元数据`,
+      run: (onProgress, operationId) => exportAssetPackage(ids, finalPath, onProgress, operationId),
+    });
+  };
+
+  const handleImportAssetPackage = async () => {
+    const packagePath = await open({ title: "选择 Caevir 资产包", multiple: false, directory: false, filters: [{ name: "Caevir 资产包", extensions: ["caepack"] }] });
+    if (typeof packagePath !== "string") return;
+    const destinationParent = await open({ title: "选择资产包落地位置", multiple: false, directory: true });
+    if (typeof destinationParent !== "string") return;
+    setPackageDialog({
+      title: "导入资产包",
+      description: "将资产恢复到所选位置，并与本机资产库执行 BLAKE3 去重",
+      run: (onProgress, operationId) => importAssetPackage(packagePath, destinationParent, onProgress, operationId),
+    });
+  };
+
   const handleDeleteAsset = async (asset: (typeof libraryAssets)[number], deletionMode: AssetDeletionMode) => {
     try {
       await deleteIndexedAsset(asset, deletionMode);
@@ -909,6 +957,7 @@ export default function App() {
         onAction={showToast}
         onOpenScan={setScanScope}
         onRefresh={() => void handleRefresh()}
+        onImportPackage={() => void handleImportAssetPackage()}
         smartViews={smartViews}
         activeSmartViewId={activeSmartViewId}
         onSmartViewSelect={handleSmartViewSelect}
@@ -924,7 +973,11 @@ export default function App() {
       {activeSection === "工具" ? (
         <ToolsWorkspace query={toolQuery} onAction={showToast} />
       ) : activeSection === "项目" ? (
-        <ProjectWorkspace query={projectQuery} onAction={showToast} onProjectsChanged={() => setProjectRevision((revision) => revision + 1)} />
+        <ProjectWorkspace query={projectQuery} onAction={showToast} onProjectsChanged={() => {
+          setProjectRevision((revision) => revision + 1);
+          setIndexRevision((revision) => revision + 1);
+          void refreshTags();
+        }} />
       ) : activeModule === "标签管理" ? (
         <TagManager
           catalog={tagCatalog}
@@ -1044,6 +1097,7 @@ export default function App() {
                 setSelectedIds(new Set());
               }}
               onApply={handleBatchTags}
+              onExport={() => void handleExportAssetPackage()}
             />
           )}
 
@@ -1117,6 +1171,20 @@ export default function App() {
             setSelectedId(id);
           }}
           onClose={() => setPreviewAssetId(undefined)}
+        />
+      )}
+      {packageDialog && (
+        <PackageTransferDialog
+          title={packageDialog.title}
+          description={packageDialog.description}
+          run={packageDialog.run}
+          onClose={() => setPackageDialog(undefined)}
+          onCompleted={() => {
+            setIndexRevision((revision) => revision + 1);
+            void refreshTags();
+            selectedAssetCache.current.clear();
+            setSelectedIds(new Set());
+          }}
         />
       )}
       <div className="minimum-size-warning">
