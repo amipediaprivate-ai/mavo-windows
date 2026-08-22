@@ -28,5 +28,5 @@ export function ImagePreview({ asset }: { asset: Asset }) {
 
   if (error) return <div className="preview-adapter-message">{error}</div>;
   if (!url) return <div className="preview-adapter-message">正在读取原图…</div>;
-  return <img src={url} alt={`${asset.name} 原图`} />;
+  return <img src={url} alt={`${asset.name} 原图`} onError={() => setError("无法生成安全预览，请使用系统查看器打开原文件")} />;
 }

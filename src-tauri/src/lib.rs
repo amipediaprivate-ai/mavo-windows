@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
     hash::{Hash, Hasher},
-    io::{Read, Seek, SeekFrom},
+    io::{Cursor, Read, Seek, SeekFrom},
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -33,7 +33,7 @@ use tauri::{
         },
         Request as HttpRequest, Response as HttpResponse, StatusCode,
     },
-    ipc::{Channel, Response},
+    ipc::Channel,
     AppHandle, Emitter, Manager, State,
 };
 
@@ -49,6 +49,7 @@ static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 static MEDIA_TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
 static MEDIA_ENRICHMENT_LOCK: Mutex<()> = Mutex::new(());
 static AUDIO_PLAYBACK_TRANSCODE_LOCK: Mutex<()> = Mutex::new(());
+static IMAGE_PREVIEW_CACHE_LOCK: Mutex<()> = Mutex::new(());
 
 fn windowless_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
@@ -81,11 +82,16 @@ const MAX_PSD_PREVIEW_PIXELS: u64 = 32 * 1024 * 1024;
 const MAX_IMAGE_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_PREVIEW_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PREVIEW_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_IMAGE_PROCESS_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SAFE_IMAGE_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_DIRECT_GIF_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DIRECT_SVG_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
+const IMAGE_PROXY_MAX_DIMENSION: u32 = 4_096;
 const BACKGROUND_IDLE_GRACE_MS: u64 = 700;
 const PREVIEW_REFRESH_INTERVAL: usize = 64;
 const PREVIEW_COMMIT_BATCH_SIZE: usize = 8;
 const MAX_MEDIA_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_PREVIEW_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PREVIEW_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 
 const ASSET_EXTENSIONS: &[&str] = &[
     "3ds", "aac", "ai", "aif", "aiff", "ase", "aseprite", "avif", "avi", "blend", "bmp", "cdr",
@@ -2652,6 +2658,31 @@ fn indexed_asset_path(asset_id: i64, app: &AppHandle) -> Result<PathBuf, String>
     Ok(path)
 }
 
+fn indexed_asset_preview_paths(
+    asset_id: i64,
+    app: &AppHandle,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let connection = setup_database(&app_data_dir.join("caevir-index.sqlite3"))?;
+    let (path, thumbnail): (String, Option<String>) = connection
+        .query_row(
+            "SELECT path, thumbnail_path FROM indexed_assets
+             WHERE rowid = ?1 AND availability = 'available'",
+            params![asset_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "资源不存在或已不可用".to_string())?;
+    let source = PathBuf::from(path);
+    if !source.is_file() {
+        return Err("原始文件不存在或无法访问".to_string());
+    }
+    let thumbnail = thumbnail.map(PathBuf::from).filter(|path| path.is_file());
+    Ok((source, thumbnail))
+}
+
 fn indexed_media_asset(asset_id: i64, app: &AppHandle) -> Result<(PathBuf, String), String> {
     let app_data_dir = app
         .path()
@@ -2671,6 +2702,158 @@ fn indexed_media_asset(asset_id: i64, app: &AppHandle) -> Result<(PathBuf, Strin
         return Err("原始媒体文件不存在或无法访问".to_string());
     }
     Ok((path, kind))
+}
+
+pub(crate) fn validate_image_processing_input(
+    path: &Path,
+    max_pixels: u64,
+) -> Result<(u32, u32), String> {
+    let file_bytes = path
+        .metadata()
+        .map_err(|error| format!("无法读取图片信息：{error}"))?
+        .len();
+    if file_bytes == 0 {
+        return Err("图片文件为空".to_string());
+    }
+    if file_bytes > MAX_IMAGE_PROCESS_FILE_BYTES {
+        return Err("图片文件超过 256 MB，无法安全处理".to_string());
+    }
+    let (width, height) =
+        image::image_dimensions(path).map_err(|error| format!("无法读取图片尺寸：{error}"))?;
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width > MAX_IMAGE_PREVIEW_DIMENSION
+        || height > MAX_IMAGE_PREVIEW_DIMENSION
+        || pixels > max_pixels
+        || pixels.saturating_mul(4) > MAX_IMAGE_PREVIEW_ALLOC_BYTES
+    {
+        return Err(format!("图片尺寸为 {width}×{height}，超过安全处理上限"));
+    }
+    Ok((width, height))
+}
+
+fn image_proxy_cache_key(path: &Path, purpose: &str) -> Result<u64, String> {
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("无法读取预览文件信息：{error}"))?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_millis())
+        .unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    purpose.hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    modified.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+fn encode_image_proxy(
+    image: &DynamicImage,
+    use_png: bool,
+) -> Result<(Vec<u8>, &'static str), String> {
+    if use_png {
+        let mut cursor = Cursor::new(Vec::new());
+        image
+            .write_to(&mut cursor, ImageFormat::Png)
+            .map_err(|error| format!("无法编码 PNG 预览：{error}"))?;
+        Ok((cursor.into_inner(), "png"))
+    } else {
+        let rgb = image.to_rgb8();
+        let mut bytes = Vec::new();
+        JpegEncoder::new_with_quality(&mut bytes, 85)
+            .encode(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                ExtendedColorType::Rgb8,
+            )
+            .map_err(|error| format!("无法编码 JPEG 预览：{error}"))?;
+        Ok((bytes, "jpg"))
+    }
+}
+
+fn bounded_image_preview_path(
+    source: &Path,
+    purpose: &str,
+    app: &AppHandle,
+) -> Result<PathBuf, String> {
+    let metadata = source
+        .metadata()
+        .map_err(|error| format!("无法读取预览文件：{error}"))?;
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension == "svg" && metadata.len() <= MAX_DIRECT_SVG_PREVIEW_BYTES {
+        return Ok(source.to_path_buf());
+    }
+    if extension == "gif" && metadata.len() <= MAX_DIRECT_GIF_PREVIEW_BYTES {
+        if let Ok((width, height)) = image::image_dimensions(source) {
+            let pixels = u64::from(width).saturating_mul(u64::from(height));
+            if width <= IMAGE_PROXY_MAX_DIMENSION
+                && height <= IMAGE_PROXY_MAX_DIMENSION
+                && pixels <= u64::from(IMAGE_PROXY_MAX_DIMENSION).pow(2)
+            {
+                return Ok(source.to_path_buf());
+            }
+        }
+    }
+
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("preview-cache");
+    fs::create_dir_all(&cache_dir).map_err(|error| format!("无法创建预览缓存：{error}"))?;
+    let cache_key = image_proxy_cache_key(source, purpose)?;
+    for extension in ["jpg", "png"] {
+        let cached = cache_dir.join(format!("{cache_key:016x}.{extension}"));
+        if cached.is_file()
+            && cached
+                .metadata()
+                .map(|value| value.len() <= MAX_SAFE_IMAGE_PREVIEW_BYTES)
+                .unwrap_or(false)
+        {
+            return Ok(cached);
+        }
+    }
+
+    let _guard = IMAGE_PREVIEW_CACHE_LOCK
+        .lock()
+        .map_err(|_| "预览缓存状态不可用".to_string())?;
+    for extension in ["jpg", "png"] {
+        let cached = cache_dir.join(format!("{cache_key:016x}.{extension}"));
+        if cached.is_file() {
+            return Ok(cached);
+        }
+    }
+
+    let decoded = decode_preview(source)?;
+    let use_png = decoded.color().has_alpha();
+    let mut maximum = IMAGE_PROXY_MAX_DIMENSION;
+    loop {
+        let resized = decoded.thumbnail(maximum, maximum);
+        let (bytes, output_extension) = encode_image_proxy(&resized, use_png)?;
+        if bytes.len() as u64 <= MAX_SAFE_IMAGE_PREVIEW_BYTES {
+            let target = cache_dir.join(format!("{cache_key:016x}.{output_extension}"));
+            let temporary = cache_dir.join(format!(".{cache_key:016x}.{output_extension}.tmp"));
+            fs::write(&temporary, bytes).map_err(|error| format!("无法写入预览缓存：{error}"))?;
+            if let Err(error) = fs::rename(&temporary, &target) {
+                let _ = fs::remove_file(&temporary);
+                if !target.is_file() {
+                    return Err(format!("无法提交预览缓存：{error}"));
+                }
+            }
+            return Ok(target);
+        }
+        if maximum <= 512 {
+            return Err("安全预览仍超过 32 MB，请使用系统查看器打开原文件".to_string());
+        }
+        maximum /= 2;
+    }
 }
 
 fn playback_media_command(name: &str) -> Command {
@@ -2850,6 +3033,14 @@ fn media_content_type(path: &Path) -> &'static str {
         "mp4" => "video/mp4",
         "webm" => "video/webm",
         "wmv" => "video/x-ms-wmv",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        "jpeg" | "jpg" => "image/jpeg",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
         "pdf" => "application/pdf",
         "ttf" => "font/ttf",
         "otf" => "font/otf",
@@ -2863,6 +3054,87 @@ fn media_content_type(path: &Path) -> &'static str {
         "obj" => "model/obj",
         "stl" => "model/stl",
         _ => "application/octet-stream",
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MediaResponseClass {
+    Stream,
+    Preview,
+}
+
+fn parse_protocol_asset_id(value: Option<&&str>) -> Result<i64, String> {
+    value
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "无效的资源 ID".to_string())
+}
+
+fn resolve_protocol_resource(
+    app: &AppHandle,
+    request_path: &str,
+) -> Result<(PathBuf, MediaResponseClass), String> {
+    let route = request_path.trim_start_matches('/');
+    if let Some(value) = route.strip_prefix("indexed-") {
+        let asset_id = value
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "无效的媒体资源 ID".to_string())?;
+        let (source_path, kind) = indexed_media_asset(asset_id, app)?;
+        if kind != "音频" {
+            let class = if kind == "视频" {
+                MediaResponseClass::Stream
+            } else {
+                MediaResponseClass::Preview
+            };
+            return Ok((source_path, class));
+        }
+        let app_data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let playback = transcode_audio_for_playback(
+            &source_path,
+            &app_data_dir.join("audio-playback-cache"),
+            asset_id,
+        )?;
+        return Ok((playback, MediaResponseClass::Stream));
+    }
+
+    let segments = route.split('.').collect::<Vec<_>>();
+    match segments.as_slice() {
+        ["preview", "asset", asset_id] => {
+            let asset_id = parse_protocol_asset_id(Some(asset_id))?;
+            let (source, thumbnail) = indexed_asset_preview_paths(asset_id, app)?;
+            let preview = bounded_image_preview_path(&source, &format!("asset-{asset_id}"), app)
+                .or_else(|error| thumbnail.ok_or(error))?;
+            Ok((preview, MediaResponseClass::Preview))
+        }
+        ["preview", "background", asset_id, job_id] => {
+            let asset_id = parse_protocol_asset_id(Some(asset_id))?;
+            let source = background_removal::preview_path(job_id, asset_id)?;
+            let preview = bounded_image_preview_path(&source, job_id, app)?;
+            Ok((preview, MediaResponseClass::Preview))
+        }
+        ["preview", "double", asset_id, job_id, variant] => {
+            let asset_id = parse_protocol_asset_id(Some(asset_id))?;
+            let source = double_background_removal::preview_path(job_id, asset_id, variant)?;
+            let preview = bounded_image_preview_path(&source, &format!("{job_id}-{variant}"), app)?;
+            Ok((preview, MediaResponseClass::Preview))
+        }
+        ["preview", "png", asset_id, job_id] => {
+            let asset_id = parse_protocol_asset_id(Some(asset_id))?;
+            let source = png_compression::preview_path(job_id, asset_id)?;
+            let preview = bounded_image_preview_path(&source, job_id, app)?;
+            Ok((preview, MediaResponseClass::Preview))
+        }
+        ["processed", "audio", asset_id, job_id, output_id] => {
+            let asset_id = parse_protocol_asset_id(Some(asset_id))?;
+            let source = audio_processing::preview_output_path(job_id, asset_id, output_id)?;
+            Ok((source, MediaResponseClass::Stream))
+        }
+        _ => Err("不支持的媒体预览地址".to_string()),
     }
 }
 
@@ -2904,42 +3176,9 @@ fn bounded_media_response_range(
 }
 
 fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> HttpResponse<Vec<u8>> {
-    let asset_id = request
-        .uri()
-        .path()
-        .trim_start_matches('/')
-        .strip_prefix("indexed-")
-        .and_then(|value| value.parse::<i64>().ok());
-    let Some(asset_id) = asset_id else {
-        return media_error_response(StatusCode::BAD_REQUEST, "无效的媒体资源 ID", None);
-    };
-    let (source_path, kind) = match indexed_media_asset(asset_id, app) {
-        Ok(asset) => asset,
+    let (path, response_class) = match resolve_protocol_resource(app, request.uri().path()) {
+        Ok(resource) => resource,
         Err(error) => return media_error_response(StatusCode::NOT_FOUND, &error, None),
-    };
-    let path = if kind == "音频" {
-        let app_data_dir = match app.path().app_data_dir() {
-            Ok(path) => path,
-            Err(error) => {
-                return media_error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &error.to_string(),
-                    None,
-                )
-            }
-        };
-        match transcode_audio_for_playback(
-            &source_path,
-            &app_data_dir.join("audio-playback-cache"),
-            asset_id,
-        ) {
-            Ok(path) => path,
-            Err(error) => {
-                return media_error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &error, None)
-            }
-        }
-    } else {
-        source_path
     };
     let file_size = match path.metadata() {
         Ok(metadata) => metadata.len(),
@@ -2965,10 +3204,13 @@ fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
     if file_size == 0 {
         return media_error_response(StatusCode::NO_CONTENT, "媒体文件为空", None);
     }
-    let max_response_bytes = if matches!(kind.as_str(), "音频" | "视频") {
-        MAX_MEDIA_RESPONSE_BYTES
-    } else {
-        MAX_PREVIEW_RESPONSE_BYTES
+    let max_response_bytes = match response_class {
+        MediaResponseClass::Stream => MAX_MEDIA_RESPONSE_BYTES,
+        MediaResponseClass::Preview => MAX_PREVIEW_RESPONSE_BYTES,
+    };
+    let cache_control = match response_class {
+        MediaResponseClass::Stream => "private, max-age=60",
+        MediaResponseClass::Preview => "no-store",
     };
     let (start, end, status) =
         bounded_media_response_range(requested_range, file_size, max_response_bytes);
@@ -2997,32 +3239,11 @@ fn media_stream_response(app: &AppHandle, request: &HttpRequest<Vec<u8>>) -> Htt
         .header(CONTENT_LENGTH, content_length.to_string())
         .header(ACCEPT_RANGES, "bytes")
         .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(CACHE_CONTROL, "private, max-age=60");
+        .header(CACHE_CONTROL, cache_control);
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(CONTENT_RANGE, format!("bytes {start}-{end}/{file_size}"));
     }
     builder.body(body).expect("valid audio stream response")
-}
-
-#[tauri::command]
-fn read_asset_preview(asset_id: i64, app: AppHandle) -> Result<Response, String> {
-    let path = indexed_asset_path(asset_id, &app)?;
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let bytes = if matches!(extension.as_str(), "psd" | "tif" | "tiff") {
-        let image = decode_preview(&path)?;
-        let mut cursor = std::io::Cursor::new(Vec::new());
-        image
-            .write_to(&mut cursor, ImageFormat::Png)
-            .map_err(|error| error.to_string())?;
-        cursor.into_inner()
-    } else {
-        fs::read(&path).map_err(|error| error.to_string())?
-    };
-    Ok(Response::new(bytes))
 }
 
 #[tauri::command]
@@ -5489,6 +5710,30 @@ fn get_background_tasks_paused(manager: State<'_, BackgroundTaskManager>) -> boo
     manager.is_paused()
 }
 
+fn cleanup_stale_cache_entries(root: &Path, max_age: Duration) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= max_age);
+        if !stale {
+            continue;
+        }
+        if path.is_dir() {
+            let _ = fs::remove_dir_all(path);
+        } else {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -5516,6 +5761,19 @@ pub fn run() {
             }
             let app_data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data_dir)?;
+            let processing_max_age = Duration::from_secs(24 * 60 * 60);
+            for directory in [
+                "audio-processing",
+                "background-removal",
+                "double-background-removal",
+                "png-compression",
+            ] {
+                cleanup_stale_cache_entries(&app_data_dir.join(directory), processing_max_age);
+            }
+            cleanup_stale_cache_entries(
+                &app_data_dir.join("preview-cache"),
+                Duration::from_secs(7 * 24 * 60 * 60),
+            );
             let database_path = app_data_dir.join("caevir-index.sqlite3");
             let thumbnail_dir = app_data_dir.join("thumbnails");
             initialize_database(&database_path).map_err(std::io::Error::other)?;
@@ -5566,24 +5824,19 @@ pub fn run() {
             list_smart_views,
             save_smart_view,
             delete_smart_view,
-            read_asset_preview,
             open_asset_original,
             open_asset_folder,
             rename_asset,
             background_removal::remove_image_background,
-            background_removal::read_background_removal_preview,
             background_removal::save_background_removal,
             background_removal::discard_background_removal,
             double_background_removal::remove_image_background_by_double_background,
-            double_background_removal::read_double_background_removal_preview,
             double_background_removal::save_double_background_removal,
             double_background_removal::discard_double_background_removal,
             png_compression::compress_png,
-            png_compression::read_png_compression_preview,
             png_compression::save_png_compression,
             png_compression::discard_png_compression,
             audio_processing::process_audio,
-            audio_processing::read_audio_processing_preview,
             audio_processing::save_audio_processing,
             audio_processing::discard_audio_processing,
             update_asset_metadata,
@@ -5724,6 +5977,37 @@ mod tests {
     }
 
     #[test]
+    fn media_range_stress_never_exceeds_stream_budget() {
+        let file_size = 8 * 1024 * 1024 * 1024_u64;
+        for index in 0..10_000_u64 {
+            let start = (index * 7919) % file_size;
+            let (range_start, range_end, _) = bounded_media_response_range(
+                Some((start, file_size - 1)),
+                file_size,
+                MAX_MEDIA_RESPONSE_BYTES,
+            );
+            assert_eq!(range_start, start);
+            assert!(range_end - range_start + 1 <= MAX_MEDIA_RESPONSE_BYTES);
+        }
+    }
+
+    #[test]
+    fn image_processing_preflight_enforces_pixel_budget() {
+        let workspace = test_workspace("image-preflight");
+        fs::create_dir_all(&workspace).unwrap();
+        let image_path = workspace.join("input.png");
+        DynamicImage::ImageRgba8(ImageBuffer::from_pixel(128, 64, Rgba([1, 2, 3, 255])))
+            .save_with_format(&image_path, ImageFormat::Png)
+            .unwrap();
+        assert_eq!(
+            validate_image_processing_input(&image_path, 128 * 64).unwrap(),
+            (128, 64)
+        );
+        assert!(validate_image_processing_input(&image_path, 128 * 64 - 1).is_err());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
     fn desktop_csp_covers_local_previews_and_media_without_eval_or_wildcards() {
         let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
         let config: serde_json::Value =
@@ -5737,6 +6021,11 @@ mod tests {
             let images = policy["img-src"].as_str().unwrap();
             assert!(images.contains("asset:"), "{policy_name}");
             assert!(images.contains("http://asset.localhost"), "{policy_name}");
+            assert!(images.contains("caevir-media:"), "{policy_name}");
+            assert!(
+                images.contains("http://caevir-media.localhost"),
+                "{policy_name}"
+            );
             assert!(images.contains("blob:"), "{policy_name}");
             assert!(images.contains("data:"), "{policy_name}");
             let media = policy["media-src"].as_str().unwrap();

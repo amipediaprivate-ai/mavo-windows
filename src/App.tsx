@@ -407,7 +407,7 @@ export default function App() {
   useEffect(() => {
     if (indexRevision === 0 || backgroundHeavyWorkRunning) return;
     const timer = window.setTimeout(() => {
-      indexedTotalCacheRef.current.delete(indexedQueryKeyRef.current);
+      indexedTotalCacheRef.current.clear();
       void refreshIndexedAssets(true, activeAssetPageRef.current);
     }, 500);
     return () => window.clearTimeout(timer);

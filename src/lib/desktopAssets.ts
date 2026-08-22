@@ -50,21 +50,7 @@ export function videoPlaybackUrl(asset: Asset) {
 export async function loadOriginalAsset(asset: Asset) {
   const assetId = indexedAssetId(asset);
   if (assetId === undefined) throw new Error("该资源没有可读取的本地原图");
-  const response = await invoke<ArrayBuffer | Uint8Array>("read_asset_preview", { assetId });
-  const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : new Uint8Array(response);
-  const transcoded = ["PSD", "TIF", "TIFF"].includes(asset.format.toUpperCase());
-  const mimeTypes: Record<string, string> = {
-    AVIF: "image/avif",
-    BMP: "image/bmp",
-    GIF: "image/gif",
-    ICO: "image/x-icon",
-    JPEG: "image/jpeg",
-    JPG: "image/jpeg",
-    PNG: "image/png",
-    SVG: "image/svg+xml",
-    WEBP: "image/webp",
-  };
-  return URL.createObjectURL(new Blob([bytes], { type: transcoded ? "image/png" : mimeTypes[asset.format.toUpperCase()] ?? "application/octet-stream" }));
+  return convertFileSrc(`preview.asset.${assetId}`, "caevir-media");
 }
 
 export async function openAssetFolder(asset: Asset) {

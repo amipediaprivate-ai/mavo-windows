@@ -10,11 +10,11 @@ use std::{
     },
     time::{Duration, UNIX_EPOCH},
 };
-use tauri::{ipc::Response, AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::{
-    normalize_directory_key, setup_database, validated_asset_stem, MAX_IMAGE_PREVIEW_ALLOC_BYTES,
-    MAX_IMAGE_PREVIEW_DIMENSION, MAX_IMAGE_PREVIEW_PIXELS,
+    normalize_directory_key, setup_database, validate_image_processing_input, validated_asset_stem,
+    MAX_IMAGE_PREVIEW_ALLOC_BYTES, MAX_IMAGE_PREVIEW_DIMENSION, MAX_IMAGE_PREVIEW_PIXELS,
 };
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
@@ -274,6 +274,7 @@ fn compress_png_blocking(
     validate_options(&options)?;
     cleanup_expired_jobs();
     let source_path = indexed_png_path(asset_id, &app)?;
+    validate_image_processing_input(&source_path, MAX_IMAGE_PREVIEW_PIXELS)?;
     let original = fs::read(&source_path).map_err(|error| format!("无法读取原 PNG：{error}"))?;
     let (width, height) = validate_png_bytes(&original)?;
     let result = compress_bytes(&original, &options)?;
@@ -351,14 +352,9 @@ fn job_for(job_id: &str, asset_id: i64) -> Result<CompressionJob, String> {
     Ok(job)
 }
 
-#[tauri::command]
-pub(crate) fn read_png_compression_preview(
-    job_id: String,
-    asset_id: i64,
-) -> Result<Response, String> {
+pub(crate) fn preview_path(job_id: &str, asset_id: i64) -> Result<PathBuf, String> {
     let job = job_for(&job_id, asset_id)?;
-    let bytes = fs::read(job.result_path).map_err(|error| format!("无法读取压缩结果：{error}"))?;
-    Ok(Response::new(bytes))
+    Ok(job.result_path)
 }
 
 fn temporary_sibling(target: &Path, job_id: &str) -> Result<PathBuf, String> {

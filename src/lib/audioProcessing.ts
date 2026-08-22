@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Asset } from "../types";
 
 export type AudioProcessingOperation = "fsbToWav" | "formatConversion" | "compression";
@@ -68,13 +68,10 @@ export async function loadAudioProcessingPreview(
   result: AudioProcessingResult,
   output: AudioProcessingOutput,
 ) {
-  const response = await invoke<ArrayBuffer | Uint8Array>("read_audio_processing_preview", {
-    assetId: indexedAssetId(asset),
-    jobId: result.jobId,
-    outputId: output.id,
-  });
-  const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : new Uint8Array(response);
-  return URL.createObjectURL(new Blob([bytes], { type: output.mimeType }));
+  return convertFileSrc(
+    `processed.audio.${indexedAssetId(asset)}.${result.jobId}.${output.id}`,
+    "caevir-media",
+  );
 }
 
 export async function saveAudioProcessing(

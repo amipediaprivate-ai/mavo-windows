@@ -168,7 +168,7 @@ export function BackgroundRemovalDialog({ asset, onClose, onSaved }: BackgroundR
 
         <div className="background-removal-body">
           <div className="background-removal-stage">
-            {(resultUrl || originalUrl) ? <img src={resultUrl || originalUrl} alt={resultUrl ? "抠图结果" : asset.name} /> : <span>正在加载图片…</span>}
+            {(resultUrl || originalUrl) ? <img src={resultUrl || originalUrl} alt={resultUrl ? "抠图结果" : asset.name} onError={() => setError("无法生成安全图片预览")} /> : <span>正在加载图片…</span>}
             <div className={`background-removal-status ${result ? "done" : processing ? "working" : ""}`}>
               {result ? <><Check size={14} /> 抠图完成 · {result.width} × {result.height}</> : processing ? <><Sparkles size={14} /> 正在下载模型或处理图片…</> : "原图预览"}
             </div>

@@ -10,11 +10,11 @@ use std::{
     },
     time::{Duration, UNIX_EPOCH},
 };
-use tauri::{ipc::Response, AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::{
-    command_output_with_timeout, normalize_directory_key, setup_database, validated_asset_stem,
-    windowless_command,
+    command_output_with_timeout, normalize_directory_key, setup_database,
+    validate_image_processing_input, validated_asset_stem, windowless_command,
 };
 
 const REMBG_RUNNER: &str = include_str!("../python/background_remove.py");
@@ -179,6 +179,7 @@ fn remove_image_background_blocking(
     validate_options(&options)?;
     cleanup_expired_jobs();
     let source_path = indexed_image_path(asset_id, &app)?;
+    validate_image_processing_input(&source_path, 32 * 1024 * 1024)?;
     let runtime = runtime_path(&app)?;
     let app_data_dir = app
         .path()
@@ -271,14 +272,9 @@ fn job_for(job_id: &str, asset_id: i64) -> Result<RemovalJob, String> {
     Ok(job)
 }
 
-#[tauri::command]
-pub(crate) fn read_background_removal_preview(
-    job_id: String,
-    asset_id: i64,
-) -> Result<Response, String> {
+pub(crate) fn preview_path(job_id: &str, asset_id: i64) -> Result<PathBuf, String> {
     let job = job_for(&job_id, asset_id)?;
-    let bytes = fs::read(job.result_path).map_err(|error| format!("无法读取抠图结果：{error}"))?;
-    Ok(Response::new(bytes))
+    Ok(job.result_path)
 }
 
 fn temporary_sibling(target: &Path, job_id: &str) -> Result<PathBuf, String> {

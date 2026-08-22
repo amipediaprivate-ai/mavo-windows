@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Asset } from "../types";
 
 export type DoubleBackgroundSaveMode = "saveAs" | "sourceDirectory" | "overwrite";
@@ -68,13 +68,7 @@ export async function loadDoubleBackgroundRemovalPreview(
   jobId: string,
   variant: DoubleBackgroundPreviewVariant,
 ) {
-  const response = await invoke<ArrayBuffer | Uint8Array>("read_double_background_removal_preview", {
-    assetId: indexedAssetId(asset),
-    jobId,
-    variant,
-  });
-  const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : new Uint8Array(response);
-  return URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  return convertFileSrc(`preview.double.${indexedAssetId(asset)}.${jobId}.${variant}`, "caevir-media");
 }
 
 export async function saveDoubleBackgroundRemoval(

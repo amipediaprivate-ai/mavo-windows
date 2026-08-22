@@ -10,11 +10,11 @@ use std::{
         Mutex, OnceLock,
     },
 };
-use tauri::{ipc::Response, AppHandle, Manager};
+use tauri::{AppHandle, Manager};
 
 use super::{
     background_removal::{save_transparent_image_result, SaveBackgroundRemovalResult},
-    decode_preview, setup_database,
+    decode_preview, setup_database, validate_image_processing_input,
 };
 
 const JOB_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -639,6 +639,7 @@ fn remove_background_blocking(
     validate_options(&options)?;
     cleanup_expired_jobs();
     let source_path = indexed_image_path(asset_id, &app)?;
+    validate_image_processing_input(&source_path, MAX_PROCESS_PIXELS)?;
     let source = decode_preview(&source_path)?.to_rgba8();
     let (width, height) = source.dimensions();
     let pixels = u64::from(width) * u64::from(height);
@@ -779,20 +780,14 @@ fn job_for(job_id: &str, asset_id: i64) -> Result<DoubleBackgroundJob, String> {
     Ok(job)
 }
 
-#[tauri::command]
-pub(crate) fn read_double_background_removal_preview(
-    job_id: String,
-    asset_id: i64,
-    variant: String,
-) -> Result<Response, String> {
+pub(crate) fn preview_path(job_id: &str, asset_id: i64, variant: &str) -> Result<PathBuf, String> {
     let job = job_for(&job_id, asset_id)?;
-    let path = match variant.as_str() {
+    let path = match variant {
         "counterpart" => job.counterpart_path,
         "result" => job.result_path,
         _ => return Err("不支持的移除背景预览类型".to_string()),
     };
-    let bytes = fs::read(path).map_err(|error| format!("无法读取移除背景预览：{error}"))?;
-    Ok(Response::new(bytes))
+    Ok(path)
 }
 
 fn save_double_background_removal_blocking(

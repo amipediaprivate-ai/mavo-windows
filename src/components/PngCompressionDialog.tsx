@@ -187,7 +187,7 @@ export function PngCompressionDialog({ asset, onClose, onSaved }: PngCompression
 
         <div className="background-removal-body">
           <div className="background-removal-stage">
-            {(resultUrl || originalUrl) ? <img src={resultUrl || originalUrl} alt={resultUrl ? "PNG 压缩结果" : asset.name} /> : <span>正在加载 PNG…</span>}
+            {(resultUrl || originalUrl) ? <img src={resultUrl || originalUrl} alt={resultUrl ? "PNG 压缩结果" : asset.name} onError={() => setError("无法生成安全 PNG 预览")} /> : <span>正在加载 PNG…</span>}
             <div className={`background-removal-status ${result && !stale ? "done" : processing ? "working" : ""}`}>
               {processing ? <><Sparkles size={14} /> 正在执行 PNG 压缩…</> : result && stale ? "压缩参数已更改，请重新压缩" : result ? <><Check size={14} /> {result.usedOriginal ? "原图已经更小，保留原始数据" : `已节省 ${savings.toFixed(1)}%`}</> : "原图预览"}
             </div>

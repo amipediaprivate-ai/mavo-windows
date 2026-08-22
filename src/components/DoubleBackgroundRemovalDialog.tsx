@@ -220,7 +220,7 @@ export function DoubleBackgroundRemovalDialog({ asset, onClose, onSaved }: Doubl
 
         <div className="background-removal-body">
           <div className="background-removal-stage double-background-removal-stage" style={stageStyle}>
-            {previewUrl ? <img src={previewUrl} alt={preview === "original" ? asset.name : preview === "counterpart" ? "自动生成的配对图" : "透明去背结果"} /> : <span>{processing ? "正在识别背景并处理…" : "正在加载图片…"}</span>}
+            {previewUrl ? <img src={previewUrl} alt={preview === "original" ? asset.name : preview === "counterpart" ? "自动生成的配对图" : "透明去背结果"} onError={() => setError("无法生成安全图片预览")} /> : <span>{processing ? "正在识别背景并处理…" : "正在加载图片…"}</span>}
             <div className="double-background-preview-tabs">
               <button type="button" className={preview === "original" ? "active" : ""} onClick={() => setPreview("original")}>原图</button>
               <button type="button" className={preview === "counterpart" ? "active" : ""} disabled={!result || stale} onClick={() => setPreview("counterpart")}>{result ? counterpartLabel(result) : "配对图"}</button>

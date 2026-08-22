@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Asset } from "../types";
 
 export type PngCompressionSaveMode = "saveAs" | "sourceDirectory" | "overwrite";
@@ -49,12 +49,7 @@ export async function compressPng(asset: Asset, options: PngCompressionOptions) 
 }
 
 export async function loadPngCompressionPreview(asset: Asset, jobId: string) {
-  const response = await invoke<ArrayBuffer | Uint8Array>("read_png_compression_preview", {
-    assetId: indexedAssetId(asset),
-    jobId,
-  });
-  const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : new Uint8Array(response);
-  return URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  return convertFileSrc(`preview.png.${indexedAssetId(asset)}.${jobId}`, "caevir-media");
 }
 
 export async function savePngCompression(

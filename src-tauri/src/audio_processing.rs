@@ -10,7 +10,7 @@ use std::{
     },
     time::{Duration, UNIX_EPOCH},
 };
-use tauri::{ipc::Response, AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::{
     background_windowless_command, command_output_with_timeout, media_command,
@@ -19,7 +19,6 @@ use super::{
 
 const JOB_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const MAX_PREVIEW_BYTES: u64 = 256 * 1024 * 1024;
 const SUPPORTED_FORMATS: &[&str] = &["mp3", "wav", "flac", "aac", "ogg", "m4a"];
 
 static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
@@ -487,23 +486,18 @@ fn job_for(job_id: &str, asset_id: i64) -> Result<AudioJob, String> {
     Ok(job)
 }
 
-#[tauri::command]
-pub(crate) fn read_audio_processing_preview(
-    job_id: String,
+pub(crate) fn preview_output_path(
+    job_id: &str,
     asset_id: i64,
-    output_id: String,
-) -> Result<Response, String> {
+    output_id: &str,
+) -> Result<PathBuf, String> {
     let job = job_for(&job_id, asset_id)?;
     let output = job
         .outputs
         .iter()
         .find(|output| output.id == output_id)
         .ok_or_else(|| "指定的音频结果不存在".to_string())?;
-    if output.bytes > MAX_PREVIEW_BYTES {
-        return Err("结果超过 256 MB，无法在窗口中试听，但仍可直接保存".to_string());
-    }
-    let bytes = fs::read(&output.path).map_err(|error| format!("无法读取音频结果：{error}"))?;
-    Ok(Response::new(bytes))
+    Ok(output.path.clone())
 }
 
 fn temporary_sibling(target: &Path, job_id: &str) -> Result<PathBuf, String> {
