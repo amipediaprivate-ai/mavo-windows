@@ -1,4 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
@@ -22,7 +23,7 @@ import {
   Trash2,
   Video,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   createProject,
   createProjectDirectory,
@@ -171,6 +172,29 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
   const [directories, setDirectories] = useState<ProjectDirectory[]>([]);
   const [activeDirectory, setActiveDirectory] = useState<string>();
   const [assets, setAssets] = useState<ProjectAsset[]>([]);
+  const [assetTotal, setAssetTotal] = useState(0);
+  const [contentLoading, setContentLoading] = useState(false);
+  const [search, setSearch] = useState(query);
+  const browseKey = JSON.stringify([activeProjectId, activeDirectory, search]);
+  const [page, setPage] = useState({ key: "", index: 0 });
+  const pageIndex = page.key === browseKey ? page.index : 0;
+  const contentKey = `${browseKey}:${pageIndex}`;
+  const contentKeyRef = useRef(contentKey);
+  contentKeyRef.current = contentKey;
+  const contentRequestRef = useRef(0);
+  const projectRequestRef = useRef(0);
+  const contentInFlight = useRef<Promise<void> | undefined>(undefined);
+  const directoryProjectRef = useRef<number | undefined>(undefined);
+  const [loadedContentKey, setLoadedContentKey] = useState("");
+  const contentPending = contentLoading || loadedContentKey !== contentKey;
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(query), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+  useEffect(() => () => {
+    contentRequestRef.current++;
+    projectRequestRef.current++;
+  }, []);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -179,38 +203,83 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
   const activeProject = projects.find((project) => project.id === activeProjectId);
 
   const refreshProjects = useCallback(async () => {
+    const request = ++projectRequestRef.current;
     setLoading(true);
     try {
-      setProjects(await listProjects(activeProjectId === undefined ? query : ""));
+      const result = await listProjects(activeProjectId === undefined ? search : "");
+      if (request === projectRequestRef.current) setProjects(result);
     } catch (error) {
       onAction(errorText(error));
     } finally {
-      setLoading(false);
+      if (request === projectRequestRef.current) setLoading(false);
     }
-  }, [activeProjectId, onAction, query]);
+  }, [activeProjectId, onAction, search]);
 
-  const refreshProjectContent = useCallback(async (projectId: number, directory = activeDirectory) => {
-    try {
-      const [nextDirectories, nextAssets] = await Promise.all([
-        listProjectDirectories(projectId),
-        listProjectAssets(projectId, directory, query),
-      ]);
-      setDirectories(nextDirectories);
-      setAssets(nextAssets);
-    } catch (error) {
-      onAction(errorText(error));
-    }
-  }, [activeDirectory, onAction, query]);
+  const refreshProjectContent = useCallback(async (projectId: number, directory = activeDirectory, refreshDirectories = false) => {
+    const key = `${JSON.stringify([projectId, directory, search])}:${pageIndex}`;
+    if (key !== contentKeyRef.current) return;
+    const request = ++contentRequestRef.current;
+    setContentLoading(true);
+    // Keep only the latest request waiting behind the currently running read.
+    await contentInFlight.current;
+    if (request !== contentRequestRef.current || key !== contentKeyRef.current) return;
+    const work = (async () => {
+      try {
+        const [nextDirectories, result] = await Promise.all([
+          refreshDirectories || directoryProjectRef.current !== projectId ? listProjectDirectories(projectId) : undefined,
+          listProjectAssets(projectId, directory, search, pageIndex * 60, 60),
+        ]);
+        if (request !== contentRequestRef.current || key !== contentKeyRef.current) return;
+        if (nextDirectories) { setDirectories(nextDirectories); directoryProjectRef.current = projectId; }
+        const lastPage = Math.max(0, Math.ceil(result.total / 60) - 1);
+        if (pageIndex > lastPage) { setPage({ key: browseKey, index: lastPage }); return; }
+        setAssets(result.items);
+        setAssetTotal(result.total);
+        setLoadedContentKey(key);
+      } catch (error) {
+        if (request === contentRequestRef.current && key === contentKeyRef.current) {
+          setAssets([]);
+          setLoadedContentKey(key);
+          onAction(errorText(error));
+        }
+      } finally {
+        if (request === contentRequestRef.current) setContentLoading(false);
+      }
+    })();
+    contentInFlight.current = work;
+    await work;
+    if (contentInFlight.current === work) contentInFlight.current = undefined;
+  }, [activeDirectory, browseKey, onAction, pageIndex, search]);
 
   useEffect(() => { void refreshProjects(); }, [refreshProjects]);
   useEffect(() => {
     if (activeProjectId !== undefined) void refreshProjectContent(activeProjectId);
-  }, [activeProjectId, activeDirectory, query, refreshProjectContent]);
+  }, [activeProjectId, refreshProjectContent]);
   useEffect(() => {
     if (activeProjectId === undefined) return;
-    const timer = window.setInterval(() => void refreshProjectContent(activeProjectId), 4000);
-    return () => window.clearInterval(timer);
-  }, [activeProjectId, refreshProjectContent]);
+    let disposed = false;
+    let timer: number | undefined;
+    let directoriesChanged = false;
+    const schedule = (refreshDirectories = false) => {
+      directoriesChanged ||= refreshDirectories;
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        const refreshDirectories = directoriesChanged;
+        directoriesChanged = false;
+        void refreshProjectContent(activeProjectId, activeDirectory, refreshDirectories);
+      }, 500);
+    };
+    const subscription = listen("asset-index-changed", () => { if (!disposed) schedule(); }).catch(() => undefined);
+    const onFocus = () => schedule(true);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", onFocus);
+      void subscription.then((stop) => stop?.());
+    };
+  }, [activeProjectId, activeDirectory, refreshProjectContent]);
 
   const handleCreate = (project: Project) => {
     setCreateOpen(false);
@@ -266,7 +335,7 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
     try {
       await updateProjectAsset(asset.membershipId, mode, directory);
       if (mode === "copy") void enrichPendingPreviews(() => void refreshProjectContent(asset.projectId, activeDirectory)).catch(() => undefined);
-      await refreshProjectContent(asset.projectId, activeDirectory);
+      await refreshProjectContent(asset.projectId, activeDirectory, true);
       await refreshProjects();
       onProjectsChanged();
       onAction("项目资源设置已更新");
@@ -285,7 +354,7 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
     setBusy(true);
     try {
       await removeAssetFromProject(asset.membershipId);
-      await refreshProjectContent(asset.projectId, activeDirectory);
+      await refreshProjectContent(asset.projectId, activeDirectory, true);
       await refreshProjects();
       onProjectsChanged();
       onAction("资源已从项目移除");
@@ -339,7 +408,7 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
             <button className="secondary-button" disabled={busy || activeProject.status !== "ready"} onClick={() => setTextDialog({ kind: "rename", title: "重命名项目", label: "新项目名称", initialValue: activeProject.name })}><PencilLine size={14} /> 重命名</button>
             <button className="secondary-button" disabled={busy || activeProject.status !== "ready"} onClick={() => void chooseMoveLocation()}><FolderInput size={14} /> 调整位置</button>
             <button className="secondary-button" disabled={busy || activeProject.status !== "ready"} onClick={() => void archiveProject()} title="归档项目" aria-label="归档项目"><Archive size={14} /> 归档项目</button>
-            <button className="icon-button" disabled={busy} onClick={() => { void refreshProjectContent(activeProject.id); void refreshProjects(); }} aria-label="刷新项目"><RefreshCw size={15} /></button>
+            <button className="icon-button" disabled={busy || contentPending} onClick={() => { void refreshProjectContent(activeProject.id, activeDirectory, true); void refreshProjects(); }} aria-label="刷新项目"><RefreshCw size={15} /></button>
           </div>
         </header>
         <div className="project-detail-body">
@@ -353,15 +422,15 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
             ))}
           </aside>
           <main className="project-assets-panel">
-            <div className="project-assets-toolbar"><div><h2>{activeDirectory === undefined ? "全部资源" : activeDirectory || "项目根目录"}</h2><span>{assets.length} 个资源</span></div>{activeDirectory !== undefined && <button className="secondary-button compact" onClick={() => void openProjectFolder(activeProject.id, activeDirectory).catch((error) => onAction(errorText(error)))}><FolderOpen size={14} /> 打开当前目录</button>}</div>
-            {assets.length === 0 ? (
+            <div className="project-assets-toolbar"><div><h2>{activeDirectory === undefined ? "全部资源" : activeDirectory || "项目根目录"}</h2><span>{assetTotal} 个资源</span></div>{activeDirectory !== undefined && <button className="secondary-button compact" onClick={() => void openProjectFolder(activeProject.id, activeDirectory).catch((error) => onAction(errorText(error)))}><FolderOpen size={14} /> 打开当前目录</button>}</div>
+            {loadedContentKey !== contentKey ? <div className="project-empty" role="status">正在加载项目资源…</div> : assets.length === 0 ? (
               <div className="project-empty"><Box size={34} /><strong>当前范围没有项目资源</strong><span>在资产模块的资源明细中，将资源添加到这个项目。</span></div>
             ) : (
               <div className="project-asset-grid">
                 {assets.map((asset) => (
                   <article className={`project-asset-card ${asset.status !== "ready" ? "unavailable" : ""}`} key={asset.membershipId}>
                     <button className="project-asset-preview" disabled={asset.status !== "ready"} onDoubleClick={() => void openProjectAsset(asset.membershipId).catch((error) => onAction(errorText(error)))}>
-                      {asset.thumbnailPath ? <img src={convertFileSrc(asset.thumbnailPath)} alt="" /> : <span>{kindIcon(asset.kind)}</span>}
+                      {asset.thumbnailPath ? <img src={convertFileSrc(asset.thumbnailPath)} alt="" loading="lazy" decoding="async" /> : <span>{kindIcon(asset.kind)}</span>}
                       <i className={asset.storageMode}>{asset.storageMode === "copy" ? <Copy size={11} /> : <Link2 size={11} />}{asset.storageMode === "copy" ? "复制" : "标记"}</i>
                     </button>
                     <div className="project-asset-info"><strong title={asset.name}>{asset.name}</strong><span>{asset.format} · {formatBytes(asset.sizeBytes)}</span>{asset.status !== "ready" && <em>{asset.status === "copy_missing" ? "项目副本缺失" : "源文件缺失"}</em>}{asset.sourceChanged && <em>源文件有更新</em>}</div>
@@ -374,6 +443,11 @@ export function ProjectWorkspace({ query, onAction, onProjectsChanged }: Project
                 ))}
               </div>
             )}
+            <nav className="project-assets-pagination" aria-label="项目资源分页">
+              <button className="secondary-button compact" disabled={contentPending || pageIndex === 0} onClick={() => setPage({ key: browseKey, index: pageIndex - 1 })}>上一页</button>
+              <span>第 {pageIndex + 1} / {Math.max(1, Math.ceil(assetTotal / 60))} 页 · 共 {assetTotal} 个资源</span>
+              <button className="secondary-button compact" disabled={contentPending || (pageIndex + 1) * 60 >= assetTotal} onClick={() => setPage({ key: browseKey, index: pageIndex + 1 })}>下一页</button>
+            </nav>
           </main>
         </div>
         {textDialog && <TextDialog state={textDialog} onClose={() => setTextDialog(undefined)} onSubmit={async (value) => {

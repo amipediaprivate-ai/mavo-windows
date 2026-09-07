@@ -64,6 +64,13 @@ pub(crate) struct ProjectAssetSummary {
     source_changed: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectAssetPage {
+    items: Vec<ProjectAssetSummary>,
+    total: u64,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AssetProjectMembership {
@@ -1079,81 +1086,104 @@ pub(crate) async fn list_project_assets(
     project_id: i64,
     relative_directory: Option<String>,
     query: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
     app: AppHandle,
-) -> Result<Vec<ProjectAssetSummary>, String> {
+) -> Result<ProjectAssetPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let connection = project_database(&app)?;
         let project = project_record(&connection, project_id)?;
-        let directory = relative_directory
-            .as_deref()
-            .map(normalize_relative_directory)
-            .transpose()?;
-        let search = query.unwrap_or_default().trim().to_string();
-        let pattern = format!("%{search}%");
-        let sql = "SELECT pa.id, pa.source_asset_uid, pa.storage_mode, pa.relative_directory,
-                          pa.copied_relative_path, pa.status,
-                          COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.name END,
-                                   source.name, pa.source_name_snapshot),
-                          COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.extension END,
-                                   source.extension, pa.source_format_snapshot),
-                          COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.kind END,
-                                   source.kind, pa.source_kind_snapshot),
-                          COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.path END,
-                                   source.path, pa.source_path_snapshot),
-                          CASE WHEN pa.storage_mode = 'copy' THEN materialized.thumbnail_path ELSE source.thumbnail_path END,
-                          COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.size_bytes END,
-                                   source.size_bytes, 0),
-                          COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.modified_ms END,
-                                   source.modified_ms, 0),
-                          source.path, source.modified_ms, pa.source_modified_at_copy
-                     FROM project_assets pa
-                     LEFT JOIN indexed_assets source ON source.asset_uid = pa.source_asset_uid
-                     LEFT JOIN indexed_assets materialized ON materialized.asset_uid = pa.materialized_asset_uid
-                    WHERE pa.project_id = ?1
-                      AND (?2 IS NULL OR pa.relative_directory = ?2)
-                      AND (?3 = '' OR COALESCE(source.name, pa.source_name_snapshot) LIKE ?4)
-                    ORDER BY pa.updated_at_ms DESC, pa.id DESC";
-        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map(params![project_id, directory, search, pattern], |row| {
-                let storage_mode: String = row.get(2)?;
-                let copied_relative_path: Option<String> = row.get(4)?;
-                let copied_path = copied_relative_path
-                    .as_deref()
-                    .map(|relative| PathBuf::from(&project.root_path).join(relative));
-                let source_path: Option<String> = row.get(13)?;
-                let status = resolved_membership_status(
-                    &storage_mode,
-                    source_path.as_deref(),
-                    copied_path.as_deref(),
-                );
-                let source_modified: Option<i64> = row.get(14)?;
-                let copied_from_modified: Option<i64> = row.get(15)?;
-                Ok(ProjectAssetSummary {
-                    membership_id: row.get(0)?,
-                    project_id,
-                    source_asset_uid: row.get(1)?,
-                    storage_mode,
-                    relative_directory: row.get(3)?,
-                    copied_relative_path,
-                    status,
-                    name: row.get(6)?,
-                    format: row.get::<_, String>(7)?.to_ascii_uppercase(),
-                    kind: row.get(8)?,
-                    effective_path: row.get(9)?,
-                    thumbnail_path: row.get(10)?,
-                    size_bytes: row.get(11)?,
-                    modified_ms: row.get(12)?,
-                    source_changed: source_modified.zip(copied_from_modified).is_some_and(|(current, copied)| current != copied),
-                })
-            })
-            .map_err(|error| error.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
-        Ok(rows)
+        query_project_assets(&connection, &project, relative_directory, query, offset, limit)
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn query_project_assets(
+    connection: &Connection,
+    project: &ProjectRecord,
+    relative_directory: Option<String>,
+    query: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> Result<ProjectAssetPage, String> {
+    let project_id = project.id;
+    let directory = relative_directory
+        .as_deref()
+        .map(normalize_relative_directory)
+        .transpose()?;
+    let search = query.unwrap_or_default().trim().to_string();
+    let pattern = format!("%{search}%");
+    let limit = limit.unwrap_or(60).clamp(1, 200);
+    let offset = offset.unwrap_or(0);
+    let total: u64 = connection.query_row(
+        "SELECT COUNT(*) FROM project_assets pa
+         LEFT JOIN indexed_assets source ON source.asset_uid = pa.source_asset_uid
+         WHERE pa.project_id = ?1 AND (?2 IS NULL OR pa.relative_directory = ?2)
+           AND (?3 = '' OR COALESCE(source.name, pa.source_name_snapshot) LIKE ?4)",
+        params![project_id, directory, search, pattern], |row| row.get(0),
+    ).map_err(|error| error.to_string())?;
+    let sql = "SELECT pa.id, pa.source_asset_uid, pa.storage_mode, pa.relative_directory,
+                      pa.copied_relative_path, pa.status,
+                      COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.name END,
+                               source.name, pa.source_name_snapshot),
+                      COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.extension END,
+                               source.extension, pa.source_format_snapshot),
+                      COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.kind END,
+                               source.kind, pa.source_kind_snapshot),
+                      COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.path END,
+                               source.path, pa.source_path_snapshot),
+                      CASE WHEN pa.storage_mode = 'copy' THEN materialized.thumbnail_path ELSE source.thumbnail_path END,
+                      COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.size_bytes END,
+                               source.size_bytes, 0),
+                      COALESCE(CASE WHEN pa.storage_mode = 'copy' THEN materialized.modified_ms END,
+                               source.modified_ms, 0),
+                      source.path, source.modified_ms, pa.source_modified_at_copy
+                 FROM project_assets pa
+                 LEFT JOIN indexed_assets source ON source.asset_uid = pa.source_asset_uid
+                 LEFT JOIN indexed_assets materialized ON materialized.asset_uid = pa.materialized_asset_uid
+                WHERE pa.project_id = ?1
+                  AND (?2 IS NULL OR pa.relative_directory = ?2)
+                  AND (?3 = '' OR COALESCE(source.name, pa.source_name_snapshot) LIKE ?4)
+                ORDER BY pa.updated_at_ms DESC, pa.id DESC LIMIT ?5 OFFSET ?6";
+    let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![project_id, directory, search, pattern, limit, offset], |row| {
+            let storage_mode: String = row.get(2)?;
+            let copied_relative_path: Option<String> = row.get(4)?;
+            let copied_path = copied_relative_path
+                .as_deref()
+                .map(|relative| PathBuf::from(&project.root_path).join(relative));
+            let source_path: Option<String> = row.get(13)?;
+            let status = resolved_membership_status(
+                &storage_mode,
+                source_path.as_deref(),
+                copied_path.as_deref(),
+            );
+            let source_modified: Option<i64> = row.get(14)?;
+            let copied_from_modified: Option<i64> = row.get(15)?;
+            Ok(ProjectAssetSummary {
+                membership_id: row.get(0)?,
+                project_id,
+                source_asset_uid: row.get(1)?,
+                storage_mode,
+                relative_directory: row.get(3)?,
+                copied_relative_path,
+                status,
+                name: row.get(6)?,
+                format: row.get::<_, String>(7)?.to_ascii_uppercase(),
+                kind: row.get(8)?,
+                effective_path: row.get(9)?,
+                thumbnail_path: row.get(10)?,
+                size_bytes: row.get(11)?,
+                modified_ms: row.get(12)?,
+                source_changed: source_modified.zip(copied_from_modified).is_some_and(|(current, copied)| current != copied),
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(ProjectAssetPage { items: rows, total })
 }
 
 fn list_memberships(
@@ -1862,4 +1892,37 @@ mod tests {
             )
             .is_err());
     }
+    #[test]
+    fn project_asset_pages_are_bounded_and_keep_filter_totals() {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::initialize_database_schema(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO projects (name, parent_path, root_path, root_key, status, created_at_ms, updated_at_ms)
+             VALUES ('Paging', 'C:\\Audit', 'C:\\Audit\\Paging', 'paging', 'ready', 1, 1)", [],
+        ).unwrap();
+        for index in 0..125 {
+            connection.execute(
+                "INSERT INTO project_assets
+                 (project_id, source_asset_uid, storage_mode, relative_directory, source_name_snapshot,
+                  source_kind_snapshot, source_format_snapshot, source_path_snapshot, status, created_at_ms, updated_at_ms)
+                 VALUES (1, ?1, 'reference', ?2, ?3, '图片', 'png', '', 'ready', 1, 1)",
+                params![format!("asset-{index}"), if index % 2 == 0 { "image" } else { "other" }, format!("hero-{index:03}")],
+            ).unwrap();
+        }
+        let project = project_record(&connection, 1).unwrap();
+        let first = query_project_assets(&connection, &project, None, None, None, None).unwrap();
+        let second = query_project_assets(&connection, &project, None, None, Some(60), None).unwrap();
+        let last = query_project_assets(&connection, &project, None, None, Some(120), None).unwrap();
+        assert_eq!((first.total, first.items.len(), second.items.len(), last.items.len()), (125, 60, 60, 5));
+        assert_eq!(first.items[0].membership_id, 125);
+        assert_eq!(second.items[0].membership_id, 65);
+        assert_eq!(last.items[0].membership_id, 5);
+        let filtered = query_project_assets(&connection, &project, Some("image".into()), None, None, None).unwrap();
+        assert_eq!((filtered.total, filtered.items.len()), (63, 60));
+        let search = query_project_assets(&connection, &project, None, Some("hero-124".into()), None, None).unwrap();
+        assert_eq!((search.total, search.items.len()), (1, 1));
+        let empty = query_project_assets(&connection, &project, None, None, Some(200), None).unwrap();
+        assert_eq!((empty.total, empty.items.len()), (125, 0));
+    }
+
 }

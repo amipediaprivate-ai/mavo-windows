@@ -97,8 +97,8 @@ export function createProjectDirectory(projectId: number, parentRelativePath: st
   return invoke<ProjectDirectory[]>("create_project_directory", { projectId, parentRelativePath, name });
 }
 
-export function listProjectAssets(projectId: number, relativeDirectory?: string, query = "") {
-  return invoke<ProjectAsset[]>("list_project_assets", { projectId, relativeDirectory, query });
+export function listProjectAssets(projectId: number, relativeDirectory?: string, query = "", offset = 0, limit = 60) {
+  return invoke<{ items: ProjectAsset[]; total: number }>("list_project_assets", { projectId, relativeDirectory, query, offset, limit });
 }
 
 export function listAssetProjects(assetUid: string) {

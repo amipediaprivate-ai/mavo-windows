@@ -8,23 +8,27 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { TDSLoader } from "three/examples/jsm/loaders/TDSLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { indexedAssetStreamUrl } from "../../lib/desktopAssets";
+import { readRangedFile } from "../../lib/rangedFile";
 import type { Asset } from "../../types";
 
-async function loadModel(asset: Asset): Promise<THREE.Object3D> {
+async function loadModel(asset: Asset, signal: AbortSignal): Promise<THREE.Object3D> {
   const url = indexedAssetStreamUrl(asset);
+  const buffer = await readRangedFile(url, signal);
+  signal.throwIfAborted();
+  const base = new URL(".", url).href;
   switch (asset.format.toUpperCase()) {
     case "GLB":
-    case "GLTF": return (await new GLTFLoader().loadAsync(url)).scene;
-    case "OBJ": return new OBJLoader().loadAsync(url);
-    case "FBX": return new FBXLoader().loadAsync(url);
+    case "GLTF": return (await new GLTFLoader().parseAsync(buffer, base)).scene;
+    case "OBJ": return new OBJLoader().parse(new TextDecoder().decode(buffer));
+    case "FBX": return new FBXLoader().parse(buffer, base);
     case "DAE": {
-      const collada = await new ColladaLoader().loadAsync(url);
+      const collada = new ColladaLoader().parse(new TextDecoder().decode(buffer), base);
       if (!collada?.scene) throw new Error("DAE 文件没有可显示的场景");
       return collada.scene;
     }
-    case "3DS": return new TDSLoader().loadAsync(url);
+    case "3DS": return new TDSLoader().parse(buffer, base);
     case "STL": {
-      const geometry = await new STLLoader().loadAsync(url);
+      const geometry = new STLLoader().parse(buffer);
       geometry.computeVertexNormals();
       return new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x8aa4d6, roughness: 0.58, metalness: 0.12 }));
     }
@@ -55,6 +59,7 @@ export function ModelPreview({ asset }: { asset: Asset }) {
     const host = hostRef.current;
     if (!host) return;
     let disposed = false;
+    const request = new AbortController();
     let model: THREE.Object3D | undefined;
     let frame = 0;
     const scene = new THREE.Scene();
@@ -92,7 +97,7 @@ export function ModelPreview({ asset }: { asset: Asset }) {
     animate();
     setLoading(true);
     setError("");
-    void loadModel(asset)
+    void loadModel(asset, request.signal)
       .then((loaded) => {
         if (disposed) {
           disposeObject(loaded);
@@ -120,10 +125,14 @@ export function ModelPreview({ asset }: { asset: Asset }) {
 
     return () => {
       disposed = true;
+      request.abort();
       cancelAnimationFrame(frame);
       observer.disconnect();
       controls.dispose();
       if (model) disposeObject(model);
+      grid.geometry.dispose();
+      const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
+      gridMaterials.forEach((material) => material.dispose());
       renderer.dispose();
       renderer.domElement.remove();
     };

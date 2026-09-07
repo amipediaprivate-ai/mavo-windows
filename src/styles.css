@@ -6106,3 +6106,13 @@ select:focus-visible,
     font-size: 12px;
   }
 }
+
+.project-assets-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
+  color: #647084;
+  font-size: 13px;
+}
